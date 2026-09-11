@@ -51,6 +51,9 @@ session_info = None
 # 以 student_id 而非 sid 為 key，手機重新整理後仍拿到同一組序列。
 twoback_sequences = {}
 
+# 本場已經交過 Stroop 成績的學生，避免斷線重連後重跑一次造成資料重複
+stroop_submitted = set()
+
 
 def broadcast_users():
     user_list = list(connected_users.values())
@@ -154,6 +157,7 @@ def handle_start(data=None):
     test_results = []
     completed_stats = {}
     twoback_sequences = {}
+    stroop_submitted.clear()
 
     if not os.path.exists(OUTPUT_DIR):
         os.makedirs(OUTPUT_DIR)
@@ -192,9 +196,15 @@ def handle_start(data=None):
 def handle_submit(data):
     """Stroop 正式題作答完畢，整包送回。"""
     results = data.get('results', [])
-    test_results.extend(results)
-
     student_id = connected_users.get(request.sid, {}).get('student_id', '未知')
+
+    # 手機斷線重連會從頭再跑一次 Stroop，同一場只採計第一次送回的成績，
+    # 否則 CSV 裡會出現同一位學生同一題號的兩筆資料。
+    if student_id in stroop_submitted:
+        return
+    stroop_submitted.add(student_id)
+
+    test_results.extend(results)
 
     if session_info:
         for r in results:

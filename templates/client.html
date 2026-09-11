@@ -1,0 +1,737 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>認知測驗</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <style>
+        body { font-family: "微軟正黑體", sans-serif; text-align: center; background-color: #f8f9fa; margin: 0; padding: 20px; -webkit-user-select: none; user-select: none; }
+        #login-screen, #waiting-screen, #test-screen, #stroop-done-screen,
+        #twoback-intro-screen, #twoback-screen, #done-screen { display: none; }
+        #login-screen { display: block; margin-top: 20vh; }
+        input { font-size: 24px; padding: 10px; width: 200px; text-align: center; margin-bottom: 20px; }
+        button { font-size: 20px; padding: 10px 20px; cursor: pointer; }
+
+        #reminder-card {
+            background-color: #ffeaa7;
+            color: #d35400;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 18px;
+            font-weight: bold;
+            max-width: 600px;
+            margin: 0 auto 20px auto;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+
+        #word-display { font-size: 80px; font-weight: bold; margin: 5vh 0; min-height: 120px; }
+        #feedback-display { font-size: 24px; font-weight: bold; min-height: 35px; margin-bottom: 10px; }
+
+        .button-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; max-width: 600px; margin: 0 auto; }
+        .color-btn { height: 150px; font-size: 32px; font-weight: bold; color: white; border: none; border-radius: 10px; cursor: pointer; }
+        #btn-red { background-color: #e74c3c; }
+        #btn-green { background-color: #2ecc71; }
+        #btn-blue { background-color: #3498db; }
+        #btn-yellow { background-color: #f1c40f; color: black; }
+
+        #personal-results {
+            display: none;
+            margin-top: 20px;
+            padding: 25px;
+            background-color: #e8f6f3;
+            border-radius: 12px;
+            max-width: 450px;
+            margin-left: auto;
+            margin-right: auto;
+            text-align: left;
+            color: #2c3e50;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+        }
+        #personal-results h3 { margin-top: 0; text-align: center; color: #16a085; font-size: 24px; }
+        .result-item { font-size: 20px; font-weight: bold; margin: 15px 0; }
+        .rank-item { border-top: 2px solid #bdc3c7; padding-top: 15px; margin-top: 15px; }
+        .rank-number { font-size: 32px; color: #e74c3c; font-weight: bold; }
+        .rank-total { font-size: 16px; color: #7f8c8d; font-weight: normal; }
+        .rank-note { font-size: 14px; color: #7f8c8d; text-align: left; margin-bottom: 0; margin-top: 15px; line-height: 1.5; }
+
+        /* ---- 2-back ---- */
+        .intro-box {
+            max-width: 560px; margin: 0 auto; text-align: left;
+            background-color: #ffffff; padding: 25px; border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.06); color: #2c3e50; line-height: 1.8;
+            font-size: 18px;
+        }
+        .intro-box h2 { text-align: center; margin-top: 0; color: #2c3e50; }
+        .intro-box .rule { background-color: #fdf3d8; padding: 12px 16px; border-radius: 8px; font-weight: bold; color: #b9770e; }
+        .intro-box .note { font-size: 15px; color: #7f8c8d; line-height: 1.6; }
+
+        .demo-row { display: flex; justify-content: center; gap: 10px; margin: 18px 0 6px 0; }
+        .demo-cell {
+            width: 54px; height: 62px; border-radius: 8px; background-color: #ecf0f1;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 30px; font-weight: bold; color: #2c3e50;
+        }
+        .demo-cell.hit { background-color: #d5f5e3; color: #1e8449; border: 2px solid #1e8449; }
+        .demo-label { display: flex; justify-content: center; gap: 10px; font-size: 13px; color: #7f8c8d; }
+        .demo-label span { width: 54px; }
+
+        #letter-display {
+            font-size: 110px; font-weight: bold; color: #2c3e50;
+            margin: 6vh 0 4vh 0; min-height: 140px; line-height: 140px;
+        }
+        #tb-feedback { font-size: 22px; font-weight: bold; min-height: 60px; margin-bottom: 10px; line-height: 1.4; }
+        #btn-same {
+            display: block; width: 100%; max-width: 460px; margin: 0 auto;
+            height: 160px; font-size: 40px; font-weight: bold;
+            color: white; background-color: #2980b9;
+            border: none; border-radius: 14px; cursor: pointer;
+        }
+        #btn-same:active { background-color: #1b4f72; }
+        #btn-same.pressed { background-color: #1b4f72; }
+        #btn-same:disabled { background-color: #bdc3c7; }
+
+        .countdown-note { font-size: 16px; color: #7f8c8d; margin-top: 18px; }
+        .big-btn { font-size: 22px; padding: 14px 32px; background-color: #27ae60; color: white; border: none; border-radius: 10px; margin-top: 20px; }
+    </style>
+</head>
+<body>
+    <div id="login-screen">
+        <h2>請輸入 6 碼班級座號</h2>
+        <input type="text" id="student_id" maxlength="6" pattern="\d{6}" placeholder="例如: 114515">
+        <br>
+        <button onclick="joinTest()">進入等待室</button>
+    </div>
+
+    <div id="waiting-screen">
+        <h2>等待測驗開始...</h2>
+        <p>請等待老師在主機端啟動測驗。</p>
+    </div>
+
+    <!-- ===== Stroop ===== -->
+    <div id="test-screen">
+        <div id="reminder-card">【重要】請選擇「字體呈現出來的顏色」，請忽略文字字面上的意義。</div>
+
+        <div id="progress">準備開始...</div>
+        <div id="word-display">+</div>
+        <div id="feedback-display"></div>
+
+        <div class="button-grid" id="button-container">
+            <button class="color-btn" id="btn-red" onclick="submitAnswer('紅色')">紅色</button>
+            <button class="color-btn" id="btn-blue" onclick="submitAnswer('藍色')">藍色</button>
+            <button class="color-btn" id="btn-green" onclick="submitAnswer('綠色')">綠色</button>
+            <button class="color-btn" id="btn-yellow" onclick="submitAnswer('黃色')">黃色</button>
+        </div>
+    </div>
+
+    <!-- ===== Stroop 結束：個人成績，倒數後自動進入記憶測驗 ===== -->
+    <div id="stroop-done-screen">
+        <h2>顏色測驗完成！</h2>
+
+        <div id="personal-results">
+            <h3>個人專屬成績單</h3>
+            <div class="result-item">正確率：<span id="res-accuracy"></span>%</div>
+            <div class="result-item">平均反應時間：<span id="res-rt"></span> 毫秒</div>
+
+            <div class="result-item rank-item">
+                平均反應時間排名：第 <span id="res-rank" class="rank-number"></span> 名
+                <span class="rank-total">(共 <span id="res-total"></span> 人已完成)</span>
+            </div>
+            <p class="rank-note">註：此排名是依據您答對題目的「平均反應時間」進行排序，並會隨著其他同學陸續完成作答而自動的更新。</p>
+        </div>
+
+        <p class="countdown-note">
+            <span id="stroop-countdown">20</span> 秒後自動進入記憶測驗說明
+        </p>
+        <button class="big-btn" onclick="goToTwobackIntro()">直接進入記憶測驗</button>
+    </div>
+
+    <!-- ===== 2-back 說明頁 ===== -->
+    <div id="twoback-intro-screen">
+        <div class="intro-box">
+            <h2>記憶測驗說明</h2>
+
+            <p>畫面中央會一個一個出現英文字母。</p>
+
+            <p class="rule">當「現在這個字母」和「前兩個字母」相同時，請按下下方的「相同」按鈕。不相同的時候，不用做任何動作。</p>
+
+            <div class="demo-row">
+                <div class="demo-cell">K</div>
+                <div class="demo-cell">S</div>
+                <div class="demo-cell hit">K</div>
+                <div class="demo-cell">M</div>
+                <div class="demo-cell">T</div>
+                <div class="demo-cell hit">M</div>
+            </div>
+            <div class="demo-label">
+                <span></span><span></span><span>要按</span><span></span><span></span><span>要按</span>
+            </div>
+
+            <p>每個字母出現 0.5 秒，之後有 2 秒空白可以作答。每題只能按一次。</p>
+
+            <p id="intro-practice-line">先做幾題練習，會告訴您答對或答錯；接著進入 30 題正式測驗，正式測驗不會顯示對錯。</p>
+
+            <p class="note">
+                測驗成績不會影響您的在校成績。若過程中感到不舒服或有壓力，
+                隨時可以放下手機停止作答，不需要說明理由。
+            </p>
+        </div>
+
+        <p class="countdown-note">
+            <span id="intro-countdown">30</span> 秒後自動開始
+        </p>
+        <button class="big-btn" id="btn-start-twoback" onclick="startTwoback()">我準備好了，開始</button>
+    </div>
+
+    <!-- ===== 2-back 測驗 ===== -->
+    <div id="twoback-screen">
+        <div id="tb-progress">準備開始...</div>
+        <div id="letter-display"></div>
+        <div id="tb-feedback"></div>
+        <button id="btn-same" onclick="pressSame()">相同</button>
+    </div>
+
+    <!-- ===== 全部結束 ===== -->
+    <div id="done-screen">
+        <h2>完成！</h2>
+        <p>本次測驗已全部結束，謝謝您的配合。</p>
+        <p>請放下手機，靜待老師的指示。</p>
+    </div>
+
+    <script>
+        const socket = io();
+        let studentId = "";
+        let hasJoined = false;
+
+        // ---- 時鐘校正 ----
+        // 各手機的系統時間可能有數秒誤差，會讓每題的時間戳記對不上 CO2 曲線。
+        // 以來回延遲的一半校正到伺服器時間，全班共用同一條時間軸。
+        let clockOffset = 0;
+        let bestRtt = Infinity;
+
+        function syncClock(times) {
+            for (let i = 0; i < times; i++) {
+                setTimeout(() => {
+                    socket.emit('time_sync', { client_sent_ms: Date.now() });
+                }, i * 200);
+            }
+        }
+
+        socket.on('time_sync_reply', (data) => {
+            const now = Date.now();
+            const rtt = now - data.client_sent_ms;
+            if (rtt < bestRtt) {
+                bestRtt = rtt;
+                clockOffset = data.server_time_ms + rtt / 2 - now;
+            }
+        });
+
+        function nowMs() {
+            return Math.round(Date.now() + clockOffset);
+        }
+
+        // ---- Stroop ----
+        let phase = "practice";
+        let practiceTrials = [];
+        let realTrials = [];
+        let currentTrialIndex = 0;
+        let startTime = 0;
+        let onsetMs = 0;
+        let results = [];
+        let isWaiting = true;
+
+        const colors = [
+            { text: "紅色", code: "#e74c3c" },
+            { text: "綠色", code: "#2ecc71" },
+            { text: "藍色", code: "#3498db" },
+            { text: "黃色", code: "#f1c40f" }
+        ];
+
+        // ---- 2-back ----
+        let practiceType = "regular";
+        let tbSeq = { practice: [], formal: [] };
+        let tbSeqReady = false;
+        let tbPhase = "practice";
+        let tbIndex = 0;
+        let tbActive = false;
+        let tbResponded = false;
+        let tbRt = null;
+        let tbOnsetPerf = 0;
+        let tbOnsetMs = 0;
+        let tbStarted = false;
+        let tbTimers = [];
+        let stroopCountdownTimer = null;
+        let introTimer = null;
+
+        const TB_LETTER_MS = 500;     // 字母顯示時間
+        const TB_TRIAL_MS = 2500;     // 每題總長（顯示 500 + 空白 2000）
+        const TB_FEEDBACK_MS = 700;   // 練習／暖身的回饋時間
+
+        function showScreen(id) {
+            ["login-screen", "waiting-screen", "test-screen", "stroop-done-screen",
+             "twoback-intro-screen", "twoback-screen", "done-screen"].forEach(s => {
+                document.getElementById(s).style.display = (s === id) ? 'block' : 'none';
+            });
+        }
+
+        function resetForNewSession() {
+            // 同一支手機可能連續參加多場（當日第 1 次、第 2 次），
+            // 每場開始前把上一場殘留的狀態與計時器全部清乾淨。
+            clearTbTimers();
+            if (stroopCountdownTimer) clearInterval(stroopCountdownTimer);
+            if (introTimer) clearInterval(introTimer);
+            stroopCountdownTimer = null;
+            introTimer = null;
+
+            tbSeq = { practice: [], formal: [] };
+            tbSeqReady = false;
+            tbPhase = "practice";
+            tbIndex = 0;
+            tbActive = false;
+            tbResponded = false;
+            tbRt = null;
+            tbStarted = false;
+
+            document.getElementById('personal-results').style.display = 'none';
+            document.getElementById('tb-feedback').innerText = "";
+            document.getElementById('letter-display').innerText = "";
+            document.getElementById('letter-display').style.fontSize = "110px";
+        }
+
+        function joinTest() {
+            const idInput = document.getElementById('student_id').value;
+            if (idInput.length === 6 && !isNaN(idInput)) {
+                studentId = idInput;
+                hasJoined = true;
+
+                socket.emit('join', { student_id: studentId });
+                showScreen('waiting-screen');
+                syncClock(5);
+            } else {
+                alert("請輸入正確的 6 碼數字。");
+            }
+        }
+
+        socket.on('test_started', (data) => {
+            if (!hasJoined) return;
+
+            if (data) {
+                practiceType = data.practice_type || "regular";
+                if (bestRtt === Infinity && data.server_time_ms) {
+                    clockOffset = data.server_time_ms - Date.now();
+                }
+            }
+            syncClock(3);
+
+            resetForNewSession();
+            showScreen('test-screen');
+
+            generatePracticeTrials();
+            generateRealTrials();
+
+            phase = "practice";
+            currentTrialIndex = 0;
+            results = [];
+
+            setTimeout(showNextTrial, 1000);
+        });
+
+        socket.on('personal_rank', (data) => {
+            document.getElementById('personal-results').style.display = 'block';
+            document.getElementById('res-accuracy').innerText = data.accuracy.toFixed(1);
+
+            if (data.avg_rt === 999999) {
+                document.getElementById('res-rt').innerText = "無正確答題";
+            } else {
+                document.getElementById('res-rt').innerText = Math.round(data.avg_rt);
+            }
+
+            document.getElementById('res-rank').innerText = data.rank;
+            document.getElementById('res-total').innerText = data.total;
+        });
+
+        socket.on('twoback_sequence', (data) => {
+            tbSeq.practice = data.practice || [];
+            tbSeq.formal = data.formal || [];
+            practiceType = data.practice_type || practiceType;
+            tbSeqReady = true;
+
+            const label = (practiceType === "first") ? "12 題練習" : "6 題暖身";
+            document.getElementById('intro-practice-line').innerText =
+                "先做 " + label + "，會告訴您答對或答錯；接著進入 30 題正式測驗，正式測驗不會顯示對錯。";
+        });
+
+        function generatePracticeTrials() {
+            practiceTrials = [];
+            for (let i = 0; i < 8; i++) {
+                const targetColor = colors[Math.floor(Math.random() * colors.length)];
+                let availableWords = colors.filter(c => c.text !== targetColor.text);
+                let wordText = availableWords[Math.floor(Math.random() * availableWords.length)].text;
+
+                practiceTrials.push({
+                    targetText: wordText,
+                    targetColorCode: targetColor.code,
+                    correctAnswer: targetColor.text
+                });
+            }
+        }
+
+        function generateRealTrials() {
+            realTrials = [];
+            const conditions = [
+                ...Array(8).fill("中性"),
+                ...Array(8).fill("一致"),
+                ...Array(8).fill("不一致")
+            ];
+            conditions.sort(() => Math.random() - 0.5);
+
+            conditions.forEach(cond => {
+                const targetColor = colors[Math.floor(Math.random() * colors.length)];
+                let wordText = "";
+
+                if (cond === "中性") {
+                    wordText = "███";
+                } else if (cond === "一致") {
+                    wordText = targetColor.text;
+                } else {
+                    let availableWords = colors.filter(c => c.text !== targetColor.text);
+                    wordText = availableWords[Math.floor(Math.random() * availableWords.length)].text;
+                }
+
+                realTrials.push({
+                    condition: cond,
+                    targetText: wordText,
+                    targetColorCode: targetColor.code,
+                    correctAnswer: targetColor.text
+                });
+            });
+        }
+
+        function showNextTrial() {
+            const currentArray = (phase === "practice") ? practiceTrials : realTrials;
+
+            if (currentTrialIndex >= currentArray.length) {
+                if (phase === "practice") {
+                    transitionToRealTest();
+                } else {
+                    finishStroop();
+                }
+                return;
+            }
+
+            document.getElementById('button-container').style.display = 'grid';
+
+            isWaiting = true;
+            document.getElementById('feedback-display').innerText = "";
+
+            if (phase === "practice") {
+                document.getElementById('progress').innerText = `【練習題】第 ${currentTrialIndex + 1} 題，共 8 題`;
+            } else {
+                document.getElementById('progress').innerText = `【正式測驗】第 ${currentTrialIndex + 1} 題，共 24 題`;
+            }
+
+            const display = document.getElementById('word-display');
+            display.innerText = "+";
+            display.style.color = "black";
+
+            setTimeout(() => {
+                const trial = currentArray[currentTrialIndex];
+                display.innerText = trial.targetText;
+                display.style.color = trial.targetColorCode;
+                startTime = performance.now();
+                onsetMs = nowMs();
+                isWaiting = false;
+            }, 500);
+        }
+
+        function submitAnswer(selectedColor) {
+            if (isWaiting) return;
+            isWaiting = true;
+
+            const rt = Math.round(performance.now() - startTime);
+            const currentArray = (phase === "practice") ? practiceTrials : realTrials;
+            const trial = currentArray[currentTrialIndex];
+            const isCorrect = (selectedColor === trial.correctAnswer);
+            const feedbackDisplay = document.getElementById('feedback-display');
+
+            if (phase === "practice") {
+                document.getElementById('word-display').innerText = "";
+                if (isCorrect) {
+                    feedbackDisplay.innerText = "正確！";
+                    feedbackDisplay.style.color = "green";
+                } else {
+                    feedbackDisplay.innerText = "錯誤，請記得選擇「顏色」";
+                    feedbackDisplay.style.color = "red";
+                }
+
+                currentTrialIndex++;
+                setTimeout(showNextTrial, 800);
+
+            } else {
+                results.push({
+                    student_id: studentId,
+                    trial: currentTrialIndex + 1,
+                    condition: trial.condition,
+                    rt: rt,
+                    onset_ms: onsetMs,
+                    correct: isCorrect ? "是" : "否"
+                });
+
+                document.getElementById('word-display').innerText = "";
+                currentTrialIndex++;
+                setTimeout(showNextTrial, 300);
+            }
+        }
+
+        function transitionToRealTest() {
+            isWaiting = true;
+
+            document.getElementById('button-container').style.display = 'none';
+            document.getElementById('feedback-display').innerText = "";
+
+            document.getElementById('progress').innerText = "練習結束";
+            const display = document.getElementById('word-display');
+            display.style.color = "black";
+            display.innerText = "準備進入正式測驗...";
+
+            setTimeout(() => { display.innerText = "3"; }, 2000);
+            setTimeout(() => { display.innerText = "2"; }, 3000);
+            setTimeout(() => { display.innerText = "1"; }, 4000);
+            setTimeout(() => {
+                phase = "real";
+                currentTrialIndex = 0;
+                showNextTrial();
+            }, 5000);
+        }
+
+        // ===== Stroop 結束 → 2-back =====
+
+        function finishStroop() {
+            showScreen('stroop-done-screen');
+            socket.emit('submit_result', { results: results });
+
+            let left = 20;
+            document.getElementById('stroop-countdown').innerText = left;
+            stroopCountdownTimer = setInterval(() => {
+                left--;
+                document.getElementById('stroop-countdown').innerText = Math.max(left, 0);
+                if (left <= 0) {
+                    clearInterval(stroopCountdownTimer);
+                    goToTwobackIntro();
+                }
+            }, 1000);
+        }
+
+        function goToTwobackIntro() {
+            if (document.getElementById('twoback-intro-screen').style.display === 'block') return;
+
+            showScreen('twoback-intro-screen');
+            socket.emit('request_twoback');
+
+            let left = 30;
+            document.getElementById('intro-countdown').innerText = left;
+            introTimer = setInterval(() => {
+                left--;
+                document.getElementById('intro-countdown').innerText = Math.max(left, 0);
+                if (left <= 0) {
+                    clearInterval(introTimer);
+                    startTwoback();
+                }
+            }, 1000);
+        }
+
+        // ===== 2-back =====
+
+        function startTwoback() {
+            if (tbStarted) return;
+
+            if (!tbSeqReady) {
+                // 序列還沒到，等一下再試
+                setTimeout(startTwoback, 300);
+                return;
+            }
+
+            tbStarted = true;
+            if (introTimer) clearInterval(introTimer);
+
+            showScreen('twoback-screen');
+
+            tbPhase = "practice";
+            tbIndex = 0;
+            setTimeout(runTwobackTrial, 1000);
+        }
+
+        function clearTbTimers() {
+            tbTimers.forEach(t => clearTimeout(t));
+            tbTimers = [];
+        }
+
+        function practiceLabel() {
+            return (practiceType === "first") ? "練習" : "暖身";
+        }
+
+        function runTwobackTrial() {
+            clearTbTimers();
+
+            const arr = (tbPhase === "practice") ? tbSeq.practice : tbSeq.formal;
+
+            if (tbIndex >= arr.length) {
+                if (tbPhase === "practice") {
+                    transitionToTwobackFormal();
+                } else {
+                    finishTwoback();
+                }
+                return;
+            }
+
+            const trial = arr[tbIndex];
+
+            tbResponded = false;
+            tbRt = null;
+            tbActive = true;
+
+            const btn = document.getElementById('btn-same');
+            btn.disabled = false;
+            btn.classList.remove('pressed');
+
+            document.getElementById('tb-feedback').innerText = "";
+
+            if (tbPhase === "practice") {
+                document.getElementById('tb-progress').innerText =
+                    `【${practiceLabel()}】第 ${tbIndex + 1} 題，共 ${arr.length} 題`;
+            } else {
+                document.getElementById('tb-progress').innerText =
+                    `【正式測驗】第 ${tbIndex + 1} 題，共 ${arr.length} 題`;
+            }
+
+            const display = document.getElementById('letter-display');
+            display.innerText = trial.letter;
+            tbOnsetPerf = performance.now();
+            tbOnsetMs = nowMs();
+
+            tbTimers.push(setTimeout(() => {
+                display.innerText = "";
+            }, TB_LETTER_MS));
+
+            tbTimers.push(setTimeout(() => {
+                endTwobackTrial(trial);
+            }, TB_TRIAL_MS));
+        }
+
+        function pressSame() {
+            if (!tbActive || tbResponded) return;
+
+            tbResponded = true;
+            tbRt = Math.round(performance.now() - tbOnsetPerf);
+
+            // 單次點擊鎖定：按過就不能再按，也不顯示對錯
+            const btn = document.getElementById('btn-same');
+            btn.classList.add('pressed');
+            btn.disabled = true;
+
+            if (tbPhase === "practice") {
+                showTwobackFeedback(
+                    (tbSeq.practice[tbIndex] || {}).is_target === true
+                );
+            }
+        }
+
+        function showTwobackFeedback(isTargetHit) {
+            const fb = document.getElementById('tb-feedback');
+            if (isTargetHit) {
+                fb.innerText = "正確！和前兩個字母相同";
+                fb.style.color = "#1e8449";
+            } else {
+                fb.innerText = "這題和前兩個字母不同，不用按";
+                fb.style.color = "#c0392b";
+            }
+        }
+
+        function endTwobackTrial(trial) {
+            tbActive = false;
+
+            const btn = document.getElementById('btn-same');
+            btn.disabled = true;
+
+            const isTarget = (trial.is_target === true);
+            let responseType;
+            let isCorrect;
+
+            if (isTarget && tbResponded) {
+                responseType = "命中";
+                isCorrect = true;
+            } else if (isTarget && !tbResponded) {
+                responseType = "漏失";
+                isCorrect = false;
+            } else if (!isTarget && tbResponded) {
+                responseType = "誤報";
+                isCorrect = false;
+            } else {
+                responseType = "正確拒絕";
+                isCorrect = true;
+            }
+
+            socket.emit('twoback_trial', {
+                phase: (tbPhase === "practice") ? practiceLabel() : "正式",
+                trial: tbIndex + 1,
+                letter: trial.letter,
+                is_target: isTarget ? "是" : "否",
+                responded: tbResponded ? "是" : "否",
+                response_type: responseType,
+                is_correct: isCorrect ? "是" : "否",
+                rt: (tbRt === null) ? "" : tbRt,
+                onset_ms: tbOnsetMs
+            });
+
+            document.getElementById('letter-display').innerText = "";
+
+            tbIndex++;
+
+            if (tbPhase === "practice") {
+                // 沒按的題目到這裡才知道對錯，補上回饋
+                if (!tbResponded) {
+                    const fb = document.getElementById('tb-feedback');
+                    if (isTarget) {
+                        fb.innerText = "這題和前兩個字母相同，要按「相同」";
+                        fb.style.color = "#c0392b";
+                    } else {
+                        fb.innerText = "正確！不用按";
+                        fb.style.color = "#1e8449";
+                    }
+                }
+                tbTimers.push(setTimeout(runTwobackTrial, TB_FEEDBACK_MS));
+            } else {
+                runTwobackTrial();
+            }
+        }
+
+        function transitionToTwobackFormal() {
+            clearTbTimers();
+            tbActive = false;
+            document.getElementById('btn-same').disabled = true;
+            document.getElementById('tb-feedback').innerText = "";
+
+            const display = document.getElementById('letter-display');
+            display.style.fontSize = "40px";
+            document.getElementById('tb-progress').innerText = practiceLabel() + "結束";
+            display.innerText = "正式測驗開始，不再顯示對錯";
+
+            tbTimers.push(setTimeout(() => { display.style.fontSize = "110px"; display.innerText = "3"; }, 2500));
+            tbTimers.push(setTimeout(() => { display.innerText = "2"; }, 3500));
+            tbTimers.push(setTimeout(() => { display.innerText = "1"; }, 4500));
+            tbTimers.push(setTimeout(() => {
+                tbPhase = "formal";
+                tbIndex = 0;
+                runTwobackTrial();
+            }, 5500));
+        }
+
+        function finishTwoback() {
+            clearTbTimers();
+            tbActive = false;
+            socket.emit('twoback_done');
+            showScreen('done-screen');
+        }
+    </script>
+</body>
+</html>

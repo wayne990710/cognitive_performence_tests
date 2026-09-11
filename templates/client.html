@@ -88,8 +88,10 @@
             border: none; border-radius: 14px; cursor: pointer;
         }
         #btn-same:active { background-color: #1b4f72; }
-        #btn-same.pressed { background-color: #1b4f72; }
         #btn-same:disabled { background-color: #bdc3c7; }
+        /* 按過的那一題要看起來像「已接受」而不是「壞掉了」，
+           因此 .pressed 放在 :disabled 之後，讓深色蓋過灰色。 */
+        #btn-same.pressed { background-color: #1b4f72; color: #d6eaf8; }
 
         .countdown-note { font-size: 16px; color: #7f8c8d; margin-top: 18px; }
         .big-btn { font-size: 22px; padding: 14px 32px; background-color: #27ae60; color: white; border: none; border-radius: 10px; margin-top: 20px; }
@@ -263,6 +265,19 @@
         let stroopCountdownTimer = null;
         let introTimer = null;
 
+        // 流程階段，只能往前走：stroop → stroopDone → tbIntro → tb → done
+        // 學生若提早按「直接進入記憶測驗」，原本的倒數計時器仍會在時間到時再觸發一次，
+        // 把畫面從進行中的測驗拉回說明頁，而題目仍在背後繼續跑。
+        // 以這個旗標擋掉所有回頭的轉場。
+        const STAGE_ORDER = ["stroop", "stroopDone", "tbIntro", "tb", "done"];
+        let stage = "stroop";
+
+        function enterStage(next) {
+            if (STAGE_ORDER.indexOf(next) <= STAGE_ORDER.indexOf(stage)) return false;
+            stage = next;
+            return true;
+        }
+
         const TB_LETTER_MS = 500;     // 字母顯示時間
         const TB_TRIAL_MS = 2500;     // 每題總長（顯示 500 + 空白 2000）
         const TB_FEEDBACK_MS = 700;   // 練習／暖身的回饋時間
@@ -282,6 +297,7 @@
             if (introTimer) clearInterval(introTimer);
             stroopCountdownTimer = null;
             introTimer = null;
+            stage = "stroop";
 
             tbSeq = { practice: [], formal: [] };
             tbSeqReady = false;
@@ -507,6 +523,8 @@
         // ===== Stroop 結束 → 2-back =====
 
         function finishStroop() {
+            if (!enterStage("stroopDone")) return;
+
             showScreen('stroop-done-screen');
             socket.emit('submit_result', { results: results });
 
@@ -523,7 +541,14 @@
         }
 
         function goToTwobackIntro() {
-            if (document.getElementById('twoback-intro-screen').style.display === 'block') return;
+            if (!enterStage("tbIntro")) return;
+
+            // 學生可能是按按鈕提早進來的，把 Stroop 的倒數計時器收掉，
+            // 否則它到時間還會再觸發一次，把畫面拉離進行中的測驗。
+            if (stroopCountdownTimer) {
+                clearInterval(stroopCountdownTimer);
+                stroopCountdownTimer = null;
+            }
 
             showScreen('twoback-intro-screen');
             socket.emit('request_twoback');
@@ -544,6 +569,7 @@
 
         function startTwoback() {
             if (tbStarted) return;
+            if (stage !== "tbIntro") return;
 
             if (!tbSeqReady) {
                 // 序列還沒到，等一下再試
@@ -551,8 +577,13 @@
                 return;
             }
 
+            if (!enterStage("tb")) return;
+
             tbStarted = true;
-            if (introTimer) clearInterval(introTimer);
+            if (introTimer) {
+                clearInterval(introTimer);
+                introTimer = null;
+            }
 
             showScreen('twoback-screen');
 
@@ -727,6 +758,8 @@
         }
 
         function finishTwoback() {
+            if (!enterStage("done")) return;
+
             clearTbTimers();
             tbActive = false;
             socket.emit('twoback_done');

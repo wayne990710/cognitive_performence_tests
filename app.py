@@ -1,6 +1,5 @@
-# IP：terminal → ipconfig → IPv4
-# 主控端：http://{ip}:5000/admin
-# 學生端：http://{ip}:5000
+# 執行方式：在 stroop_project 資料夾下輸入 python app.py
+# 啟動後畫面會直接印出主控端與學生端的網址，不需要自己去查 IP。
 #
 # 一場施測的流程：
 #   主控端選「施測類型」與「當日場次」→ 按開始
@@ -14,6 +13,8 @@
 
 import os
 import csv
+import socket
+import warnings
 from datetime import datetime, timezone
 
 from flask import Flask, render_template, request
@@ -25,7 +26,11 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = 'kahoot_stroop_secret'
 # 不開 debug 時 Flask 預設會快取樣板，改完 client.html 不重啟就不會生效。
 app.config['TEMPLATES_AUTO_RELOAD'] = True
-socketio = SocketIO(app)
+# eventlet 會在這一行被載入時印一段很長的淘汰警告，蓋掉啟動訊息裡的網址。
+# 這裡只是把那段訊息藏起來，功能完全不受影響。
+with warnings.catch_warnings():
+    warnings.simplefilter('ignore')
+    socketio = SocketIO(app)
 
 OUTPUT_DIR = 'output'
 
@@ -367,6 +372,103 @@ def handle_request_status():
     broadcast_users()
 
 
+def primary_lan_ip():
+    """本機在區域網路上的 IPv4，也就是學生手機要連的那個位址。
+
+    作法是開一個 UDP socket 去「連」一個外部位址再問作業系統用了哪張網卡。
+    UDP 的 connect 不會真的送出任何封包，所以沒有網際網路也能問出答案。
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(('8.8.8.8', 80))
+        return s.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        s.close()
+
+
+def all_lan_ips():
+    """本機所有的 IPv4，用來提示還有哪些位址可以試。
+
+    筆電常常同時有 Wi-Fi、有線網路、VPN 或虛擬機的網卡，
+    自動選到的那個不一定是教室 Wi-Fi 的那張。
+    """
+    ips = []
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            if ip not in ips and not ip.startswith('127.'):
+                ips.append(ip)
+    except socket.gaierror:
+        pass
+    return ips
+
+
+def port_in_use(port):
+    """檢查 port 是否已經被占用。
+
+    最常見的情況是研究人員忘記前一個視窗還開著又按了一次執行，
+    這時候直接看到一長串錯誤訊息會很難判斷發生什麼事。
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(0.3)
+    try:
+        return s.connect_ex(('127.0.0.1', port)) == 0
+    finally:
+        s.close()
+
+
+def print_startup_banner(port):
+    ip = primary_lan_ip()
+    others = [x for x in all_lan_ips() if x != ip]
+
+    line = '=' * 56
+
+    print()
+    print(line)
+    print('  認知測驗伺服器已啟動')
+    print(line)
+
+    if ip:
+        print()
+        print('  學生端（請學生用手機瀏覽器開啟）')
+        print('      http://%s:%d' % (ip, port))
+        print()
+        print('  主控端（研究人員自己開）')
+        print('      http://%s:%d/admin' % (ip, port))
+    else:
+        print()
+        print('  找不到區域網路位址，請確認電腦有連上教室的 Wi-Fi。')
+
+    if others:
+        print()
+        print('  這台電腦還有其他網路位址，上面的連不到時可以改試：')
+        for other in others:
+            print('      http://%s:%d' % (other, port))
+
+    print()
+    print('  手機必須和這台電腦連同一個 Wi-Fi。')
+    print('  要關閉伺服器請按 Ctrl + C。')
+    print(line)
+    print()
+
+
 if __name__ == '__main__':
+    PORT = 5000
+
+    if port_in_use(PORT):
+        print()
+        print('=' * 56)
+        print('  啟動失敗：連接埠 %d 已經被占用。' % PORT)
+        print('=' * 56)
+        print()
+        print('  最可能的原因是這支程式已經在另一個視窗執行中。')
+        print('  請找到那個視窗（標題通常是 python app.py）繼續使用，')
+        print('  或在該視窗按 Ctrl + C 關掉之後再重新執行一次。')
+        print()
+        raise SystemExit(1)
+
+    print_startup_banner(PORT)
     # 正式施測時不開 debug：自動重載會在測驗中途踢掉所有手機的連線。
-    socketio.run(app, host='0.0.0.0', port=5000, debug=False)
+    socketio.run(app, host='0.0.0.0', port=PORT, debug=False)

@@ -35,14 +35,15 @@ with warnings.catch_warnings():
 OUTPUT_DIR = 'output'
 
 STROOP_HEADER = [
-    "Session_ID", "Session_Slot", "Practice_Type", "Student_ID",
+    "Session_ID", "Session_Slot", "Practice_Type", "Student_ID", "Attempt",
     "Trial", "Condition", "Stimulus_Onset", "Reaction_Time_ms", "Is_Correct",
+    "Page_Hidden",
 ]
 
 TWOBACK_HEADER = [
-    "Session_ID", "Session_Slot", "Practice_Type", "Student_ID",
+    "Session_ID", "Session_Slot", "Practice_Type", "Student_ID", "Attempt",
     "Phase", "Trial", "Letter", "Is_Target", "Responded", "Response_Type",
-    "Is_Correct", "Reaction_Time_ms", "Stimulus_Onset",
+    "Is_Correct", "Reaction_Time_ms", "Stimulus_Onset", "Page_Hidden",
 ]
 
 connected_users = {}
@@ -56,13 +57,36 @@ session_info = None
 # 以 student_id 而非 sid 為 key，手機重新整理後仍拿到同一組序列。
 twoback_sequences = {}
 
-# 本場已經交過 Stroop 成績的學生，避免斷線重連後重跑一次造成資料重複
-stroop_submitted = set()
+# 本場每位學生各自做過幾次 Stroop／2-back。
+# 手機重新整理或斷線重連會讓同一個人在同一場重跑一次，
+# 這時不刪掉舊資料，而是把新的那一輪標成第 2 次嘗試（Attempt 欄），
+# 分析時取最後一次完整的即可；兩輪都留著才看得出現場發生過什麼事。
+stroop_attempts = {}
+twoback_attempts = {}
 
 
 def broadcast_users():
-    user_list = list(connected_users.values())
-    emit('update_users', {'users': user_list}, broadcast=True)
+    """把連線名單推給主控端，並標出重複的座號。
+
+    兩位學生打錯成同一個號碼、或同一個人用兩支裝置登入時，
+    兩邊的資料會混在同一個 Student_ID 底下而無法分辨。
+    在主控端把重複的標出來，研究人員按下開始之前就能發現。
+    """
+    counts = {}
+    for user in connected_users.values():
+        sid = user.get('student_id')
+        counts[sid] = counts.get(sid, 0) + 1
+
+    user_list = []
+    for user in connected_users.values():
+        item = dict(user)
+        item['duplicate'] = counts.get(user.get('student_id'), 0) > 1
+        user_list.append(item)
+
+    emit('update_users', {
+        'users': user_list,
+        'duplicate_ids': sorted(sid for sid, n in counts.items() if n > 1),
+    }, broadcast=True)
 
 
 def server_time_ms():
@@ -94,19 +118,68 @@ def session_payload():
     }
 
 
-def create_csv(path, header):
-    with open(path, mode='w', newline='', encoding='utf-8-sig') as f:
-        csv.writer(f).writerow(header)
+def as_dict(data):
+    """把收到的東西保證變成 dict。
+
+    正常的手機端一定送 dict，但只要有人用瀏覽器主控台亂送，
+    或前端在奇怪的狀態下送出半成品，handler 就會拋例外。
+    例外雖然會被 socketio 接住、伺服器不會掛掉，
+    但那位學生這一題（甚至整份成績）就會安靜地沒被寫進檔案，
+    現場完全看不出來，所以一律先過這一關。
+    """
+    return data if isinstance(data, dict) else {}
 
 
-def append_csv(path, row):
-    """逐筆附加寫入並立即落檔。
+def csv_safe(value):
+    """讓文字欄位在 Excel 裡不會被當成公式。
+
+    Excel 會把開頭是 = + - @ 的儲存格當公式執行。座號理論上都是數字，
+    但只要有人輸入 -11459 這種東西，研究人員用 Excel 打開 CSV 時
+    就會看到錯誤或被執行的內容。這裡在前面補一個單引號讓它保持純文字。
+    """
+    if value is None:
+        return ''
+    text = str(value)
+    if text[:1] in ('=', '+', '-', '@'):
+        return "'" + text
+    return text
+
+
+def clean_student_id(value):
+    """整理座號：去掉前後空白，並限制長度避免超長字串塞爆檔案。"""
+    if value is None:
+        return '未知'
+    text = str(value).strip()
+    if not text:
+        return '未知'
+    return text[:32]
+
+
+def yes_no(value):
+    """把前端送來的旗標統一成「是／否」。"""
+    if value is True or value in ('是', 'true', True):
+        return '是'
+    if value is False or value in ('否', 'false', False):
+        return '否'
+    return ''
+
+
+def append_csv(path, header, row):
+    """逐筆附加寫入並立即落檔，檔案不存在時先補上欄位列。
+
+    刻意不在開場時就把檔案建出來：研究人員若不小心按到開始又馬上結束，
+    output 資料夾就會留下一堆空檔，正式收資料時很難認哪個才是真的。
+    改成第一筆資料進來時才建檔，沒有資料的場次就不會留下檔案。
 
     每次都重新開檔關檔，確保作業系統層面確實寫出，
-    伺服器若中途被關掉也不會掉資料。
+    伺服器若中途被關掉也不會掉已經寫進去的資料。
     """
+    is_new = not os.path.exists(path)
     with open(path, mode='a', newline='', encoding='utf-8-sig') as f:
-        csv.writer(f).writerow(row)
+        writer = csv.writer(f)
+        if is_new:
+            writer.writerow(header)
+        writer.writerow(row)
 
 
 @app.route('/')
@@ -121,15 +194,35 @@ def admin():
 
 @socketio.on('join')
 def handle_join(data):
-    student_id = data.get('student_id')
+    student_id = clean_student_id(as_dict(data).get('student_id'))
 
-    status = '測驗中' if session_info else '等待中'
+    status = 'Stroop 測驗中' if session_info else '等待中'
     connected_users[request.sid] = {'student_id': student_id, 'status': status}
     broadcast_users()
 
     # 中途加入或手機重新整理時，直接讓他接上進行中的場次
     if session_info:
         emit('test_started', session_payload(), to=request.sid)
+
+
+@socketio.on('rejoin')
+def handle_rejoin(data):
+    """Wi-Fi 斷一下又接回來時，重新登記這條連線是誰。
+
+    socket.io 重連後會拿到全新的連線編號，伺服器若不重新對應，
+    這位學生接下來送回的每一題都會變成「未知」，資料等於白收。
+    這裡刻意不發 test_started：手機上的測驗其實一直在跑，
+    把畫面重設回 Stroop 反而會毀掉正在進行的那一場。
+    """
+    data = as_dict(data)
+    student_id = clean_student_id(data.get('student_id'))
+    status = data.get('status')
+
+    if not isinstance(status, str) or not status:
+        status = 'Stroop 測驗中' if session_info else '等待中'
+
+    connected_users[request.sid] = {'student_id': student_id, 'status': status}
+    broadcast_users()
 
 
 @socketio.on('disconnect')
@@ -146,7 +239,7 @@ def handle_start(data=None):
     if session_info:
         return
 
-    data = data or {}
+    data = as_dict(data)
 
     practice_type = data.get('practice_type', 'regular')
     if practice_type not in ('first', 'regular'):
@@ -162,7 +255,8 @@ def handle_start(data=None):
     test_results = []
     completed_stats = {}
     twoback_sequences = {}
-    stroop_submitted.clear()
+    stroop_attempts.clear()
+    twoback_attempts.clear()
 
     if not os.path.exists(OUTPUT_DIR):
         os.makedirs(OUTPUT_DIR)
@@ -170,9 +264,6 @@ def handle_start(data=None):
     session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     stroop_csv = os.path.join(OUTPUT_DIR, "stroop_%s.csv" % session_id)
     twoback_csv = os.path.join(OUTPUT_DIR, "twoback_%s.csv" % session_id)
-
-    create_csv(stroop_csv, STROOP_HEADER)
-    create_csv(twoback_csv, TWOBACK_HEADER)
 
     session_info = {
         'session_id': session_id,
@@ -200,38 +291,45 @@ def handle_start(data=None):
 @socketio.on('submit_result')
 def handle_submit(data):
     """Stroop 正式題作答完畢，整包送回。"""
-    results = data.get('results', [])
+    results = as_dict(data).get('results', [])
+    if not isinstance(results, list):
+        results = []
+    results = [r for r in results if isinstance(r, dict)]
+
     student_id = connected_users.get(request.sid, {}).get('student_id', '未知')
 
-    # 手機斷線重連會從頭再跑一次 Stroop，同一場只採計第一次送回的成績，
-    # 否則 CSV 裡會出現同一位學生同一題號的兩筆資料。
-    if student_id in stroop_submitted:
-        return
-    stroop_submitted.add(student_id)
+    # 手機重新整理或斷線重連會讓同一個人再跑一次，
+    # 舊的那一輪留著不動，新的這一輪標成第 2 次嘗試。
+    attempt = stroop_attempts.get(student_id, 0) + 1
+    stroop_attempts[student_id] = attempt
 
     test_results.extend(results)
 
     if session_info:
         for r in results:
-            append_csv(session_info['stroop_csv'], [
+            append_csv(session_info['stroop_csv'], STROOP_HEADER, [
                 session_info['session_id'],
                 session_info['session_slot'],
                 session_info['practice_type'],
-                r.get('student_id', student_id),
+                csv_safe(clean_student_id(r.get('student_id', student_id))),
+                attempt,
                 r.get('trial'),
                 r.get('condition'),
                 iso_from_ms(r.get('onset_ms')),
                 r.get('rt'),
                 r.get('correct'),
+                yes_no(r.get('page_hidden')),
             ])
 
     total_trials = len(results)
-    correct_trials = [r for r in results if r['correct'] == '是']
+    correct_trials = [r for r in results if r.get('correct') == '是']
 
     accuracy = (len(correct_trials) / total_trials * 100) if total_trials > 0 else 0
 
-    if correct_trials:
-        avg_rt = sum(r['rt'] for r in correct_trials) / len(correct_trials)
+    rts = [r.get('rt') for r in correct_trials]
+    rts = [x for x in rts if isinstance(x, (int, float))]
+    if rts:
+        avg_rt = sum(rts) / len(rts)
     else:
         avg_rt = 999999
 
@@ -270,6 +368,8 @@ def handle_request_twoback():
 
     student_id = connected_users.get(request.sid, {}).get('student_id', '未知')
 
+    twoback_attempts[student_id] = twoback_attempts.get(student_id, 0) + 1
+
     if student_id not in twoback_sequences:
         twoback_sequences[student_id] = {
             'practice': tb.generate_practice_sequence(
@@ -297,13 +397,15 @@ def handle_twoback_trial(data):
     if not session_info:
         return
 
+    data = as_dict(data)
     student_id = connected_users.get(request.sid, {}).get('student_id', '未知')
 
-    append_csv(session_info['twoback_csv'], [
+    append_csv(session_info['twoback_csv'], TWOBACK_HEADER, [
         session_info['session_id'],
         session_info['session_slot'],
         session_info['practice_type'],
-        student_id,
+        csv_safe(student_id),
+        twoback_attempts.get(student_id, 1),
         data.get('phase'),
         data.get('trial'),
         data.get('letter'),
@@ -313,6 +415,7 @@ def handle_twoback_trial(data):
         data.get('is_correct'),
         data.get('rt'),
         iso_from_ms(data.get('onset_ms')),
+        yes_no(data.get('page_hidden')),
     ])
 
 
@@ -353,7 +456,7 @@ def handle_time_sync(data):
     後續才能與微型空氣品質感測站的 CO2 曲線對齊。
     """
     emit('time_sync_reply', {
-        'client_sent_ms': data.get('client_sent_ms'),
+        'client_sent_ms': as_dict(data).get('client_sent_ms'),
         'server_time_ms': server_time_ms(),
     }, to=request.sid)
 

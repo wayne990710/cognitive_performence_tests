@@ -93,11 +93,20 @@
            因此 .pressed 放在 :disabled 之後，讓深色蓋過灰色。 */
         #btn-same.pressed { background-color: #1b4f72; color: #d6eaf8; }
 
+        #net-warning {
+            display: none;
+            position: fixed; top: 0; left: 0; right: 0; z-index: 999;
+            background-color: #c0392b; color: white;
+            padding: 10px; font-size: 16px; font-weight: bold;
+        }
+
         .countdown-note { font-size: 16px; color: #7f8c8d; margin-top: 18px; }
         .big-btn { font-size: 22px; padding: 14px 32px; background-color: #27ae60; color: white; border: none; border-radius: 10px; margin-top: 20px; }
     </style>
 </head>
 <body>
+    <div id="net-warning">連線中斷，正在重新連線⋯⋯請不要關閉或重新整理畫面</div>
+
     <div id="login-screen">
         <h2>請輸入 6 碼班級座號</h2>
         <input type="text" id="student_id" maxlength="6" pattern="\d{6}" placeholder="例如: 114515">
@@ -282,6 +291,29 @@
         const TB_TRIAL_MS = 2500;     // 每題總長（顯示 500 + 空白 2000）
         const TB_FEEDBACK_MS = 700;   // 練習／暖身的回饋時間
 
+        // 手機鎖屏或切到其他 App 時，瀏覽器會把計時器壓到最少 1 秒，
+        // 字母的 500 毫秒呈現會被拉長，那幾題的刺激時序就不是規格上的 2.5 秒。
+        // 學生當下也看不到畫面，等於整段是空白作答。
+        // 這些題目必須標記出來，否則會被當成正常的「漏失」算進 d'。
+        let trialHidden = false;
+
+        function markTrialHidden() {
+            if (document.hidden) trialHidden = true;
+        }
+
+        document.addEventListener('visibilitychange', markTrialHidden);
+
+        function startTrialVisibility() {
+            trialHidden = document.hidden;
+        }
+
+        function currentStatusLabel() {
+            if (stage === "done") return "已完成";
+            if (stage === "tb" || stage === "tbIntro") return "記憶測驗中";
+            if (stage === "stroopDone") return "Stroop 已完成";
+            return "Stroop 測驗中";
+        }
+
         function showScreen(id) {
             ["login-screen", "waiting-screen", "test-screen", "stroop-done-screen",
              "twoback-intro-screen", "twoback-screen", "done-screen"].forEach(s => {
@@ -315,18 +347,45 @@
         }
 
         function joinTest() {
-            const idInput = document.getElementById('student_id').value;
-            if (idInput.length === 6 && !isNaN(idInput)) {
-                studentId = idInput;
-                hasJoined = true;
+            // 原本用 length===6 && !isNaN() 判斷，會放行 -11459、+11459、
+            // " 11459"（前面有空白）、1e5000、0x1234、00.000 這些東西。
+            // 這些都不是有效的班級座號，一旦收進去就對不回編碼對照表，
+            // 那位學生該場的資料等於白做；開頭的 - 和 + 還會被 Excel 當成公式。
+            // 因此改成只接受剛好 6 個半形數字。
+            const idInput = document.getElementById('student_id').value.trim();
 
-                socket.emit('join', { student_id: studentId });
-                showScreen('waiting-screen');
-                syncClock(5);
-            } else {
-                alert("請輸入正確的 6 碼數字。");
+            if (!/^[0-9]{6}$/.test(idInput)) {
+                alert("請輸入 6 碼數字的班級座號（例如 114515），不要有空白或其他符號。");
+                return;
             }
+
+            studentId = idInput;
+            hasJoined = true;
+
+            socket.emit('join', { student_id: studentId });
+            showScreen('waiting-screen');
+            syncClock(5);
         }
+
+        socket.on('disconnect', () => {
+            if (hasJoined) {
+                document.getElementById('net-warning').style.display = 'block';
+            }
+        });
+
+        socket.on('connect', () => {
+            document.getElementById('net-warning').style.display = 'none';
+            if (!hasJoined) return;
+
+            // 重連後伺服器會給一組新的連線編號，要重新表明身分，
+            // 否則接下來每一題都會被記成「未知」。
+            // 用 rejoin 而不是 join，是為了不讓伺服器把畫面重設回 Stroop 開頭。
+            socket.emit('rejoin', {
+                student_id: studentId,
+                status: currentStatusLabel()
+            });
+            syncClock(3);
+        });
 
         socket.on('test_started', (data) => {
             if (!hasJoined) return;
@@ -456,6 +515,7 @@
                 display.style.color = trial.targetColorCode;
                 startTime = performance.now();
                 onsetMs = nowMs();
+                startTrialVisibility();
                 isWaiting = false;
             }, 500);
         }
@@ -490,6 +550,7 @@
                     condition: trial.condition,
                     rt: rt,
                     onset_ms: onsetMs,
+                    page_hidden: trialHidden ? "是" : "否",
                     correct: isCorrect ? "是" : "否"
                 });
 
@@ -639,6 +700,7 @@
             display.innerText = trial.letter;
             tbOnsetPerf = performance.now();
             tbOnsetMs = nowMs();
+            startTrialVisibility();
 
             tbTimers.push(setTimeout(() => {
                 display.innerText = "";
@@ -711,7 +773,8 @@
                 response_type: responseType,
                 is_correct: isCorrect ? "是" : "否",
                 rt: (tbRt === null) ? "" : tbRt,
-                onset_ms: tbOnsetMs
+                onset_ms: tbOnsetMs,
+                page_hidden: trialHidden ? "是" : "否"
             });
 
             document.getElementById('letter-display').innerText = "";

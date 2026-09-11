@@ -31,6 +31,14 @@
         th, td { border: 1px solid #dcdde1; padding: 12px; text-align: left; }
         th { background-color: #f5f6fa; }
 
+        #dup-warning {
+            display: none;
+            background-color: #fdecea; border: 2px solid #e74c3c;
+            color: #922b21; padding: 12px 16px; border-radius: 8px;
+            margin-top: 15px; font-size: 16px; line-height: 1.6;
+        }
+        tr.dup-row td { background-color: #fdecea; }
+
         .status-waiting { color: #7f8c8d; }
         .status-stroop { color: #e67e22; font-weight: bold; }
         .status-stroop-done { color: #2980b9; font-weight: bold; }
@@ -57,6 +65,12 @@
         </fieldset>
 
         <p style="font-size: 20px; font-weight: bold;">目前已連線學生人數：<span id="user-count">0</span> 人</p>
+
+        <div id="dup-warning">
+            <b>注意：有重複的班級座號</b><span id="dup-list"></span><br>
+            兩位學生打錯成同一個號碼、或同一個人用兩支裝置登入時，
+            他們的資料會混在同一個座號底下而分不出來。請先確認並請學生改正，再開始測驗。
+        </div>
         <button class="btn-start" id="btn-start" onclick="startTest()">開始測驗</button>
         <button class="btn-end" id="btn-end" onclick="endSession()" disabled>結束本場</button>
 
@@ -93,9 +107,10 @@
 
             data.users.forEach(user => {
                 const tr = document.createElement('tr');
+                if (user.duplicate) tr.className = 'dup-row';
 
                 const tdId = document.createElement('td');
-                tdId.innerText = user.student_id;
+                tdId.innerText = user.student_id + (user.duplicate ? '（重複）' : '');
 
                 const tdStatus = document.createElement('td');
                 tdStatus.innerText = user.status;
@@ -118,10 +133,18 @@
             });
 
             document.getElementById('user-count').innerText = data.users.length;
+
+            const dups = data.duplicate_ids || [];
+            document.getElementById('dup-warning').style.display = dups.length ? 'block' : 'none';
+            document.getElementById('dup-list').innerText = dups.length ? '：' + dups.join('、') : '';
         });
 
+        const SESSION_BOX_HTML = document.getElementById('session-box').innerHTML;
+
         socket.on('session_info', (data) => {
-            document.getElementById('session-box').style.display = 'block';
+            const box = document.getElementById('session-box');
+            box.innerHTML = SESSION_BOX_HTML;
+            box.style.display = 'block';
             document.getElementById('s-id').innerText = data.session_id;
             document.getElementById('s-type').innerText =
                 (data.practice_type === 'first') ? '第一次施測（12 題練習）' : '一般施測（6 題暖身）';
@@ -134,10 +157,16 @@
             setOptionsEnabled(false);
         });
 
-        socket.on('session_ended', () => {
+        socket.on('session_ended', (data) => {
             document.getElementById('btn-start').disabled = false;
             document.getElementById('btn-end').disabled = true;
             setOptionsEnabled(true);
+
+            // 把場次資訊框換成「已結束」，不要繼續顯示成像是還在進行中，
+            // 否則下一場開始前會分不清畫面上的檔案路徑是哪一場的。
+            const box = document.getElementById('session-box');
+            box.innerHTML = '<b>上一場（' + (data && data.session_id ? data.session_id : '') +
+                '）已結束。</b>資料已寫入檔案，可以開始下一場。';
         });
 
         function setOptionsEnabled(enabled) {

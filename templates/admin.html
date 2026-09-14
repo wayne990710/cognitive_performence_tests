@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <title>主控端後臺</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <style>
         body { font-family: "微軟正黑體", sans-serif; padding: 20px; max-width: 800px; margin: 0 auto; }
         .control-panel { background-color: #f1f2f6; padding: 20px; border-radius: 10px; margin-bottom: 20px; }
@@ -39,6 +40,16 @@
         }
         tr.dup-row td { background-color: #fdecea; }
 
+        .qr-panel { display: flex; gap: 20px; align-items: center; background-color: #ffffff; border: 1px solid #dcdde1; border-radius: 10px; padding: 16px 20px; margin-bottom: 18px; }
+        .qr-panel #qr-small { flex: 0 0 auto; }
+        .qr-panel .qr-text { font-size: 16px; line-height: 1.7; color: #2c3e50; }
+        .qr-panel .qr-url { font-size: 22px; font-weight: bold; font-family: Consolas, monospace; color: #2c3e50; word-break: break-all; }
+        .btn-qr { background-color: #34495e; color: white; font-size: 16px; padding: 8px 16px; margin-top: 8px; }
+        #qr-overlay { display: none; position: fixed; inset: 0; z-index: 1000; background-color: #ffffff; flex-direction: column; align-items: center; justify-content: center; text-align: center; cursor: pointer; }
+        #qr-overlay .overlay-title { font-size: 4vh; font-weight: bold; color: #2c3e50; margin-bottom: 2vh; }
+        #qr-overlay .overlay-url { font-size: 5vh; font-weight: bold; font-family: Consolas, monospace; color: #2c3e50; margin-top: 2vh; }
+        #qr-overlay .overlay-hint { font-size: 2.2vh; color: #7f8c8d; margin-top: 2vh; }
+
         .mode-banner { padding: 14px 18px; border-radius: 10px; margin-bottom: 18px; font-size: 20px; font-weight: bold; }
         .mode-banner .mode-hint { font-size: 14px; font-weight: normal; margin-top: 6px; }
         .mode-stroop { background-color: #e8f6f3; color: #16624f; border: 2px solid #1abc9c; }
@@ -63,6 +74,24 @@
     <div class="mode-banner mode-stroop">
         目前版本：只有 Stroop（目前核准的版本）
         <div class="mode-hint">學生做完 Stroop、看完成績就結束，不會出現 2-back。</div>
+    </div>
+    {% endif %}
+
+    {% if student_url %}
+    <div class="qr-panel">
+        <div id="qr-small"></div>
+        <div class="qr-text">
+            <div>請學生用手機相機掃描 QR code，或在瀏覽器輸入：</div>
+            <div class="qr-url">{{ student_url }}</div>
+            {% if other_urls %}
+            <div class="hint">學生連不上時可改試：{{ other_urls | join('、') }}</div>
+            {% endif %}
+            <button class="btn-qr" onclick="showQrOverlay()">全螢幕顯示 QR code（投影用）</button>
+        </div>
+    </div>
+    {% else %}
+    <div class="qr-panel">
+        <div class="qr-text">找不到區域網路位址，無法產生 QR code。請確認這台電腦有連上教室的 Wi-Fi，然後重新整理本頁。</div>
     </div>
     {% endif %}
 
@@ -113,11 +142,59 @@
         </tbody>
     </table>
 
+    <div id="qr-overlay" onclick="hideQrOverlay()">
+        <div class="overlay-title">請用手機掃描 QR code 進入測驗</div>
+        <div id="qr-large"></div>
+        <div class="overlay-url">{{ student_url }}</div>
+        <div class="overlay-hint">手機必須連上與這台電腦相同的 Wi-Fi。點一下畫面任意處或按 Esc 關閉。</div>
+    </div>
+
     <script>
         const socket = io();
 
         // 由伺服器的啟動參數決定：預設只有 Stroop，加上 --with-2back 才會接 2-back。
         const TWOBACK_ENABLED = {{ 'true' if twoback_enabled else 'false' }};
+
+        // ---- 學生端網址的 QR code ----
+        // 網址由伺服器偵測區域網路 IP 後帶進來，每次開主控端都重新產生，
+        // 所以換教室、IP 變了也不用重印。
+        const STUDENT_URL = {{ student_url | tojson }};
+
+        function drawQr(elementId, size) {
+            const el = document.getElementById(elementId);
+            if (!el || !STUDENT_URL || typeof QRCode === 'undefined') return false;
+            el.innerHTML = "";
+            new QRCode(el, {
+                text: STUDENT_URL,
+                width: size,
+                height: size,
+                colorDark: "#000000",
+                colorLight: "#ffffff",
+                correctLevel: QRCode.CorrectLevel.M
+            });
+            return true;
+        }
+
+        function showQrOverlay() {
+            document.getElementById('qr-overlay').style.display = 'flex';
+            // 依螢幕大小畫大張的，投影到教室後排也掃得到
+            const size = Math.floor(Math.min(window.innerWidth, window.innerHeight) * 0.6);
+            drawQr('qr-large', size);
+        }
+
+        function hideQrOverlay() {
+            document.getElementById('qr-overlay').style.display = 'none';
+        }
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') hideQrOverlay();
+        });
+
+        if (STUDENT_URL && !drawQr('qr-small', 150)) {
+            // QR code 程式庫是從網路載入的；這台電腦沒有網際網路時會載入失敗
+            document.getElementById('qr-small').innerText =
+                'QR code 載入失敗（這台電腦可能沒有連上網際網路），請學生手動輸入右側網址。';
+        }
 
         socket.on('connect', () => {
             socket.emit('request_status');

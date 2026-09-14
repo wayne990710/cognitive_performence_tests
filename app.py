@@ -41,6 +41,7 @@ with warnings.catch_warnings():
     socketio = SocketIO(app)
 
 OUTPUT_DIR = 'output'
+PORT = 5000
 
 # 是否啟用 2-back 工作記憶測驗。
 # 同意書與目前核准的計畫書只包含 Stroop，REC 變更案通過之前一律不能施測 2-back，
@@ -221,7 +222,15 @@ def index():
 
 @app.route('/admin')
 def admin():
-    return render_template('admin.html', twoback_enabled=TWOBACK_ENABLED)
+    # 主控端的 QR code 要編進「學生端網址」。
+    # 不能直接用瀏覽器網址列的主機名稱：研究人員若用 localhost 開主控端，
+    # QR code 就會變成 localhost，學生手機掃了連不上。
+    # 所以由伺服器偵測區域網路 IP，每次開頁面都重新偵測，換教室、換 IP 也不用改。
+    ip = primary_lan_ip()
+    student_url = 'http://%s:%d' % (ip, PORT) if ip else ''
+    other_urls = ['http://%s:%d' % (x, PORT) for x in all_lan_ips() if x != ip]
+    return render_template('admin.html', twoback_enabled=TWOBACK_ENABLED,
+                           student_url=student_url, other_urls=other_urls)
 
 
 @socketio.on('join')
@@ -602,8 +611,6 @@ if __name__ == '__main__':
         help='加入 2-back 工作記憶測驗（僅限 REC 變更案核准後使用）')
     args = parser.parse_args()
     TWOBACK_ENABLED = args.with_2back
-
-    PORT = 5000
 
     if port_in_use(PORT):
         print()

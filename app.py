@@ -26,7 +26,7 @@ import warnings
 from datetime import datetime, timezone
 
 from flask import Flask, render_template, request
-from flask_socketio import SocketIO, emit
+from flask_socketio import SocketIO, emit, join_room
 
 import twoback_sequence as tb
 
@@ -83,6 +83,11 @@ twoback_sequences = {}
 stroop_attempts = {}
 twoback_attempts = {}
 
+# 主控端的連線。學生名單與「退回重新輸入」只對這些連線開放：
+# 名單裡有全班的座號，不應該廣播到每一支學生手機上。
+ADMIN_ROOM = 'admins'
+admin_sids = set()
+
 
 def broadcast_users():
     """把連線名單推給主控端，並標出重複的座號。
@@ -97,15 +102,17 @@ def broadcast_users():
         counts[sid] = counts.get(sid, 0) + 1
 
     user_list = []
-    for user in connected_users.values():
+    for sid, user in connected_users.items():
         item = dict(user)
+        item['sid'] = sid    # 主控端按「退回重新輸入」時用來指定是哪一支手機
         item['duplicate'] = counts.get(user.get('student_id'), 0) > 1
         user_list.append(item)
 
+    # 只發給主控端
     emit('update_users', {
         'users': user_list,
-        'duplicate_ids': sorted(sid for sid, n in counts.items() if n > 1),
-    }, broadcast=True)
+        'duplicate_ids': sorted(s for s, n in counts.items() if n > 1),
+    }, to=ADMIN_ROOM)
 
 
 def server_time_ms():
@@ -268,9 +275,28 @@ def handle_rejoin(data):
 
 @socketio.on('disconnect')
 def handle_disconnect():
+    admin_sids.discard(request.sid)
     if request.sid in connected_users:
         del connected_users[request.sid]
         broadcast_users()
+
+
+@socketio.on('kick_user')
+def handle_kick_user(data):
+    """主控端把某位學生退回輸入座號的畫面（例如座號打錯）。
+
+    只接受主控端連線送來的請求。被退回的手機會重新整理回到登入畫面，
+    伺服器同時把他從名單移除。已經寫進 CSV 的資料不會刪除，
+    仍留在原本（打錯的）座號底下，分析時需要自行排除。
+    """
+    if request.sid not in admin_sids:
+        return
+    target = as_dict(data).get('sid')
+    if target not in connected_users:
+        return
+    emit('kicked', {}, to=target)
+    del connected_users[target]
+    broadcast_users()
 
 
 @socketio.on('start_test')
@@ -511,7 +537,12 @@ def handle_time_sync(data):
 
 @socketio.on('request_status')
 def handle_request_status():
-    """主控端重新整理後，取回目前場次狀態。"""
+    """主控端連上（或重新整理）時呼叫：登記為主控端，並取回目前場次狀態。
+
+    學生名單與「退回重新輸入」只開放給登記過的主控端連線。
+    """
+    admin_sids.add(request.sid)
+    join_room(ADMIN_ROOM)
     if session_info:
         emit('session_info', session_info_payload(), to=request.sid)
     broadcast_users()

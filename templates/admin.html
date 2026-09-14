@@ -40,6 +40,8 @@
         }
         tr.dup-row td { background-color: #fdecea; }
 
+        .btn-kick { background-color: #e74c3c; color: white; font-size: 14px; padding: 6px 12px; margin: 0; }
+
         .qr-panel { display: flex; gap: 20px; align-items: center; background-color: #ffffff; border: 1px solid #dcdde1; border-radius: 10px; padding: 16px 20px; margin-bottom: 18px; }
         .qr-panel #qr-small { flex: 0 0 auto; }
         .qr-panel .qr-text { font-size: 16px; line-height: 1.7; color: #2c3e50; }
@@ -136,6 +138,7 @@
             <tr>
                 <th>班級座號</th>
                 <th>目前狀態</th>
+                <th>操作</th>
             </tr>
         </thead>
         <tbody id="user-list">
@@ -226,8 +229,16 @@
                     tdStatus.className = 'status-completed';
                 }
 
+                const tdAction = document.createElement('td');
+                const btnKick = document.createElement('button');
+                btnKick.className = 'btn-kick';
+                btnKick.innerText = '退回重新輸入';
+                btnKick.onclick = () => kickUser(user.sid, user.student_id, user.status);
+                tdAction.appendChild(btnKick);
+
                 tr.appendChild(tdId);
                 tr.appendChild(tdStatus);
+                tr.appendChild(tdAction);
                 tbody.appendChild(tr);
             });
 
@@ -316,6 +327,18 @@
                     practice_type: practiceType,
                     session_slot: sessionSlot
                 });
+            }
+        }
+
+        function kickUser(sid, studentId, status) {
+            let msg = "確定要讓座號 " + studentId + " 的學生退回輸入座號的畫面嗎？\n"
+                    + "他的手機會回到一開始的畫面，需要重新輸入座號。";
+            if (status !== '等待中') {
+                msg += "\n\n注意：這位學生目前「" + status + "」。退回後他要從頭開始測驗，"
+                     + "已經送出的資料不會刪除，會留在原本的座號 " + studentId + " 底下，分析時要記得排除。";
+            }
+            if (confirm(msg)) {
+                socket.emit('kick_user', { sid: sid });
             }
         }
 

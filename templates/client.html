@@ -100,6 +100,14 @@
             padding: 10px; font-size: 16px; font-weight: bold;
         }
 
+        #my-id-box {
+            display: inline-block; margin: 10px auto 6px auto; padding: 12px 28px;
+            background-color: #ffffff; border: 2px solid #2c3e50; border-radius: 10px;
+            font-size: 22px; font-weight: bold; color: #2c3e50;
+        }
+        #my-id { font-size: 34px; letter-spacing: 4px; font-family: Consolas, monospace; }
+        .id-hint { font-size: 17px; color: #c0392b; font-weight: bold; margin-top: 8px; }
+
         #kicked-msg {
             display: none;
             max-width: 420px; margin: 0 auto 20px auto; padding: 12px 16px;
@@ -124,6 +132,8 @@
 
     <div id="waiting-screen">
         <h2>等待測驗開始...</h2>
+        <div id="my-id-box">你的班級座號：<span id="my-id"></span></div>
+        <p class="id-hint">如果座號不正確，請馬上告訴實驗人員。</p>
         <p>請等待老師在主機端啟動測驗。</p>
     </div>
 
@@ -229,6 +239,13 @@
 
         // 由伺服器的啟動參數決定：預設只有 Stroop，加上 --with-2back 才會接 2-back。
         const TWOBACK_ENABLED = {{ 'true' if twoback_enabled else 'false' }};
+
+        // 伺服器這次啟動的編號，重連時用來判斷伺服器是否重開過
+        const SERVER_BOOT_ID = {{ server_boot_id | tojson }};
+
+        // 這個頁面的識別碼，每次載入頁面重新產生，讓伺服器認得「同一個頁面」的重連。
+        // 不用 crypto.randomUUID()：它只能在 https 下使用，這裡是 http。
+        const CLIENT_TOKEN = Date.now().toString(36) + Math.random().toString(36).slice(2, 12);
 
         let studentId = "";
         let hasJoined = false;
@@ -380,8 +397,9 @@
 
             studentId = idInput;
             hasJoined = true;
+            document.getElementById('my-id').innerText = studentId;
 
-            socket.emit('join', { student_id: studentId });
+            socket.emit('join', { student_id: studentId, token: CLIENT_TOKEN });
             showScreen('waiting-screen');
             syncClock(5);
         }
@@ -389,16 +407,26 @@
         // 主控端按「退回重新輸入」：直接重新整理頁面回到輸入座號的畫面。
         // 用重新整理而不是切換畫面，是因為測驗中還有很多排好的計時器，
         // 重新整理才能保證全部停掉，不會在背景繼續出題、送資料。
-        socket.on('kicked', () => {
+        function backToLogin(reason) {
             hasJoined = false;
-            try { sessionStorage.setItem('kicked', '1'); } catch (e) {}
+            try { sessionStorage.setItem('back_to_login', reason); } catch (e) {}
             location.reload();
-        });
+        }
+
+        socket.on('kicked', () => backToLogin('kicked'));
+
+        // 伺服器重開過，原本的場次已經不在：回到輸入座號的畫面重新加入
+        socket.on('server_restarted', () => backToLogin('restarted'));
 
         try {
-            if (sessionStorage.getItem('kicked') === '1') {
-                sessionStorage.removeItem('kicked');
-                document.getElementById('kicked-msg').style.display = 'block';
+            const reason = sessionStorage.getItem('back_to_login');
+            if (reason) {
+                sessionStorage.removeItem('back_to_login');
+                const msg = document.getElementById('kicked-msg');
+                msg.innerText = (reason === 'restarted')
+                    ? '測驗程式已重新啟動，請重新輸入 6 碼班級座號。'
+                    : '老師已將你退回，請重新輸入正確的 6 碼班級座號。';
+                msg.style.display = 'block';
             }
         } catch (e) {}
 
@@ -417,7 +445,9 @@
             // 用 rejoin 而不是 join，是為了不讓伺服器把畫面重設回 Stroop 開頭。
             socket.emit('rejoin', {
                 student_id: studentId,
-                status: currentStatusLabel()
+                status: currentStatusLabel(),
+                token: CLIENT_TOKEN,
+                boot_id: SERVER_BOOT_ID
             });
             syncClock(3);
         });

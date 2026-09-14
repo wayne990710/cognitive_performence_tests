@@ -22,6 +22,7 @@ import os
 import csv
 import argparse
 import socket
+import uuid
 import warnings
 from datetime import datetime, timezone
 
@@ -88,6 +89,16 @@ twoback_attempts = {}
 ADMIN_ROOM = 'admins'
 admin_sids = set()
 
+# 每次啟動伺服器時產生一個新的編號，寫進學生端頁面。
+# 伺服器重開後，還開著舊頁面的手機會自動重連；編號不同就表示伺服器重開過
+# （場次設定已經不在了），這時要讓手機回到輸入座號的畫面，
+# 而不是悄悄重新出現在主控端的名單上。
+SERVER_BOOT_ID = uuid.uuid4().hex
+
+# 被主控端退回的頁面識別碼。手機若在退回的當下剛好斷線或正在重連，
+# 退回的訊息會送不到；等它重新連上時，伺服器認出這個識別碼就再退回一次。
+kicked_tokens = set()
+
 
 def broadcast_users():
     """把連線名單推給主控端，並標出重複的座號。
@@ -104,6 +115,7 @@ def broadcast_users():
     user_list = []
     for sid, user in connected_users.items():
         item = dict(user)
+        item.pop('token', None)
         item['sid'] = sid    # 主控端按「退回重新輸入」時用來指定是哪一支手機
         item['duplicate'] = counts.get(user.get('student_id'), 0) > 1
         user_list.append(item)
@@ -195,6 +207,13 @@ def clean_student_id(value):
     return text[:32]
 
 
+def clean_token(value):
+    """學生端頁面識別碼：每次載入頁面隨機產生，用來認出「同一個頁面」的重連。"""
+    if not isinstance(value, str):
+        return ''
+    return value[:64]
+
+
 def yes_no(value):
     """把前端送來的旗標統一成「是／否」。"""
     if value is True or value in ('是', 'true', True):
@@ -224,7 +243,8 @@ def append_csv(path, header, row):
 
 @app.route('/')
 def index():
-    return render_template('client.html', twoback_enabled=TWOBACK_ENABLED)
+    return render_template('client.html', twoback_enabled=TWOBACK_ENABLED,
+                           server_boot_id=SERVER_BOOT_ID)
 
 
 @app.route('/admin')
@@ -242,10 +262,12 @@ def admin():
 
 @socketio.on('join')
 def handle_join(data):
-    student_id = clean_student_id(as_dict(data).get('student_id'))
+    data = as_dict(data)
+    student_id = clean_student_id(data.get('student_id'))
 
     status = 'Stroop 測驗中' if session_info else '等待中'
-    connected_users[request.sid] = {'student_id': student_id, 'status': status}
+    connected_users[request.sid] = {'student_id': student_id, 'status': status,
+                                    'token': clean_token(data.get('token'))}
     broadcast_users()
 
     # 中途加入或手機重新整理時，直接讓他接上進行中的場次
@@ -263,13 +285,27 @@ def handle_rejoin(data):
     把畫面重設回 Stroop 反而會毀掉正在進行的那一場。
     """
     data = as_dict(data)
+
+    # 伺服器重開過：舊場次已經不在，請手機回到輸入座號的畫面重新加入
+    if data.get('boot_id') != SERVER_BOOT_ID:
+        emit('server_restarted', {}, to=request.sid)
+        return
+
+    token = clean_token(data.get('token'))
+
+    # 這個頁面先前已被主控端退回，只是當時沒收到訊息：再退回一次
+    if token and token in kicked_tokens:
+        emit('kicked', {}, to=request.sid)
+        return
+
     student_id = clean_student_id(data.get('student_id'))
     status = data.get('status')
 
     if not isinstance(status, str) or not status:
         status = 'Stroop 測驗中' if session_info else '等待中'
 
-    connected_users[request.sid] = {'student_id': student_id, 'status': status}
+    connected_users[request.sid] = {'student_id': student_id, 'status': status,
+                                    'token': token}
     broadcast_users()
 
 
@@ -294,8 +330,19 @@ def handle_kick_user(data):
     target = as_dict(data).get('sid')
     if target not in connected_users:
         return
-    emit('kicked', {}, to=target)
-    del connected_users[target]
+
+    token = connected_users[target].get('token')
+    if token:
+        # 記住這個頁面：若它此刻剛好斷線沒收到退回訊息，重連時會再被退回一次
+        kicked_tokens.add(token)
+        # 同一個頁面若因斷線重連而在名單上留下舊連線，一併移除
+        sids = [s for s, u in connected_users.items() if u.get('token') == token]
+    else:
+        sids = [target]
+
+    for s in sids:
+        emit('kicked', {}, to=s)
+        connected_users.pop(s, None)
     broadcast_users()
 
 

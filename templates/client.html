@@ -123,7 +123,7 @@
     <div id="net-warning">連線中斷，正在重新連線⋯⋯請不要關閉或重新整理畫面</div>
 
     <div id="login-screen">
-        <p id="kicked-msg">老師已將你退回，請重新輸入正確的 6 碼班級座號。</p>
+        <p id="kicked-msg">研究人員已將你退回，請重新輸入正確的 6 碼班級座號。</p>
         <h2>請輸入 6 碼班級座號</h2>
         <input type="text" id="student_id" maxlength="6" pattern="\d{6}" placeholder="例如: 114515">
         <br>
@@ -133,8 +133,8 @@
     <div id="waiting-screen">
         <h2>等待測驗開始...</h2>
         <div id="my-id-box">你的班級座號：<span id="my-id"></span></div>
-        <p class="id-hint">如果座號不正確，請馬上告訴實驗人員。</p>
-        <p>請等待老師在主機端啟動測驗。</p>
+        <p class="id-hint">如果座號不正確，請馬上告訴研究人員。</p>
+        <p>請等待研究人員啟動測驗。</p>
     </div>
 
     <!-- ===== Stroop ===== -->
@@ -178,7 +178,7 @@
 
         <div id="stroop-only-end">
             <p>本次測驗已全部結束，謝謝您的配合。</p>
-            <p>請放下手機，靜待老師的指示。</p>
+            <p>請放下手機，靜待研究人員的指示。</p>
         </div>
     </div>
 
@@ -231,7 +231,7 @@
     <div id="done-screen">
         <h2>完成！</h2>
         <p>本次測驗已全部結束，謝謝您的配合。</p>
-        <p>請放下手機，靜待老師的指示。</p>
+        <p>請放下手機，靜待研究人員的指示。</p>
     </div>
 
     <script>
@@ -425,7 +425,7 @@
                 const msg = document.getElementById('kicked-msg');
                 msg.innerText = (reason === 'restarted')
                     ? '測驗程式已重新啟動，請重新輸入 6 碼班級座號。'
-                    : '老師已將你退回，請重新輸入正確的 6 碼班級座號。';
+                    : '研究人員已將你退回，請重新輸入正確的 6 碼班級座號。';
                 msg.style.display = 'block';
             }
         } catch (e) {}

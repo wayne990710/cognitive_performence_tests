@@ -135,7 +135,7 @@
         </div>
     </div>
 
-    <!-- ===== Stroop 結束：個人成績，倒數後自動進入記憶測驗 ===== -->
+    <!-- ===== Stroop 結束：個人成績；有 2-back 時倒數後自動進入記憶測驗，只有 Stroop 時就此結束 ===== -->
     <div id="stroop-done-screen">
         <h2>顏色測驗完成！</h2>
 
@@ -151,10 +151,17 @@
             <p class="rank-note">註：此排名是依據您答對題目的「平均反應時間」進行排序，並會隨著其他同學陸續完成作答而自動的更新。</p>
         </div>
 
-        <p class="countdown-note">
-            <span id="stroop-countdown">20</span> 秒後自動進入記憶測驗說明
-        </p>
-        <button class="big-btn" onclick="goToTwobackIntro()">直接進入記憶測驗</button>
+        <div id="stroop-next-twoback">
+            <p class="countdown-note">
+                <span id="stroop-countdown">20</span> 秒後自動進入記憶測驗說明
+            </p>
+            <button class="big-btn" onclick="goToTwobackIntro()">直接進入記憶測驗</button>
+        </div>
+
+        <div id="stroop-only-end">
+            <p>本次測驗已全部結束，謝謝您的配合。</p>
+            <p>請放下手機，靜待老師的指示。</p>
+        </div>
     </div>
 
     <!-- ===== 2-back 說明頁 ===== -->
@@ -211,6 +218,10 @@
 
     <script>
         const socket = io();
+
+        // 由伺服器的啟動參數決定：預設只有 Stroop，加上 --with-2back 才會接 2-back。
+        const TWOBACK_ENABLED = {{ 'true' if twoback_enabled else 'false' }};
+
         let studentId = "";
         let hasJoined = false;
 
@@ -584,8 +595,21 @@
         // ===== Stroop 結束 → 2-back =====
 
         function finishStroop() {
+            if (!TWOBACK_ENABLED) {
+                // 只有 Stroop：顯示成績後整場結束，不會出現任何記憶測驗的畫面。
+                if (!enterStage("done")) return;
+
+                document.getElementById('stroop-next-twoback').style.display = 'none';
+                document.getElementById('stroop-only-end').style.display = 'block';
+                showScreen('stroop-done-screen');
+                socket.emit('submit_result', { results: results });
+                return;
+            }
+
             if (!enterStage("stroopDone")) return;
 
+            document.getElementById('stroop-next-twoback').style.display = 'block';
+            document.getElementById('stroop-only-end').style.display = 'none';
             showScreen('stroop-done-screen');
             socket.emit('submit_result', { results: results });
 
@@ -602,6 +626,7 @@
         }
 
         function goToTwobackIntro() {
+            if (!TWOBACK_ENABLED) return;
             if (!enterStage("tbIntro")) return;
 
             // 學生可能是按按鈕提早進來的，把 Stroop 的倒數計時器收掉，

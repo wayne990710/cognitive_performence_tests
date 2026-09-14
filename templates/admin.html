@@ -39,6 +39,11 @@
         }
         tr.dup-row td { background-color: #fdecea; }
 
+        .mode-banner { padding: 14px 18px; border-radius: 10px; margin-bottom: 18px; font-size: 20px; font-weight: bold; }
+        .mode-banner .mode-hint { font-size: 14px; font-weight: normal; margin-top: 6px; }
+        .mode-stroop { background-color: #e8f6f3; color: #16624f; border: 2px solid #1abc9c; }
+        .mode-full { background-color: #f4ecf7; color: #6c3483; border: 2px solid #8e44ad; }
+
         .status-waiting { color: #7f8c8d; }
         .status-stroop { color: #e67e22; font-weight: bold; }
         .status-stroop-done { color: #2980b9; font-weight: bold; }
@@ -49,13 +54,27 @@
 <body>
     <h1>測驗主控端後臺</h1>
 
+    {% if twoback_enabled %}
+    <div class="mode-banner mode-full">
+        目前版本：Stroop ＋ 2-back 工作記憶測驗
+        <div class="mode-hint">僅限 REC 變更案核准後使用。尚未核准時，請關閉伺服器，改用 python app.py 重新啟動。</div>
+    </div>
+    {% else %}
+    <div class="mode-banner mode-stroop">
+        目前版本：只有 Stroop（目前核准的版本）
+        <div class="mode-hint">學生做完 Stroop、看完成績就結束，不會出現 2-back。</div>
+    </div>
+    {% endif %}
+
     <div class="control-panel">
+        {% if twoback_enabled %}
         <fieldset>
             <legend>施測類型</legend>
             <label><input type="radio" name="practice_type" value="first"> 第一次施測（2-back 做 12 題練習）</label>
             <label><input type="radio" name="practice_type" value="regular" checked> 一般施測（2-back 做 6 題暖身）</label>
-            <p class="hint">整個研究期間只有第一天的第一場選「第一次施測」，其餘都選「一般施測」。</p>
+            <p class="hint">加入 2-back 後的第一場選「第一次施測」，其餘都選「一般施測」。</p>
         </fieldset>
+        {% endif %}
 
         <fieldset>
             <legend>當日場次</legend>
@@ -77,7 +96,7 @@
         <div id="session-box">
             <div><b>本場代碼：</b><span id="s-id"></span>　<b>施測類型：</b><span id="s-type"></span>　<b>場次：</b>當日第 <span id="s-slot"></span> 次</div>
             <div><b>Stroop 資料：</b><code id="s-stroop"></code></div>
-            <div><b>2-back 資料：</b><code id="s-twoback"></code></div>
+            <div id="s-twoback-row"><b>2-back 資料：</b><code id="s-twoback"></code></div>
             <div class="hint">資料每答完一題就即時寫入上述檔案，不需要按匯出；手機斷線或伺服器重開都不會影響已寫入的部分。</div>
         </div>
     </div>
@@ -96,6 +115,9 @@
 
     <script>
         const socket = io();
+
+        // 由伺服器的啟動參數決定：預設只有 Stroop，加上 --with-2back 才會接 2-back。
+        const TWOBACK_ENABLED = {{ 'true' if twoback_enabled else 'false' }};
 
         socket.on('connect', () => {
             socket.emit('request_status');
@@ -146,11 +168,18 @@
             box.innerHTML = SESSION_BOX_HTML;
             box.style.display = 'block';
             document.getElementById('s-id').innerText = data.session_id;
-            document.getElementById('s-type').innerText =
-                (data.practice_type === 'first') ? '第一次施測（12 題練習）' : '一般施測（6 題暖身）';
+            if (data.twoback_enabled) {
+                document.getElementById('s-type').innerText =
+                    (data.practice_type === 'first')
+                        ? 'Stroop＋2-back，第一次施測（12 題練習）'
+                        : 'Stroop＋2-back，一般施測（6 題暖身）';
+                document.getElementById('s-twoback').innerText = data.twoback_csv;
+            } else {
+                document.getElementById('s-type').innerText = '只有 Stroop';
+                document.getElementById('s-twoback-row').style.display = 'none';
+            }
             document.getElementById('s-slot').innerText = data.session_slot;
             document.getElementById('s-stroop').innerText = data.stroop_csv;
-            document.getElementById('s-twoback').innerText = data.twoback_csv;
 
             document.getElementById('btn-start').disabled = true;
             document.getElementById('btn-end').disabled = false;
@@ -188,12 +217,17 @@
                 return;
             }
 
-            const practiceType = selectedValue('practice_type');
+            const practiceType = TWOBACK_ENABLED ? selectedValue('practice_type') : null;
             const sessionSlot = selectedValue('session_slot');
 
-            const typeText = (practiceType === 'first')
-                ? '第一次施測（2-back 做 12 題練習）'
-                : '一般施測（2-back 做 6 題暖身）';
+            let typeText;
+            if (!TWOBACK_ENABLED) {
+                typeText = '只有 Stroop';
+            } else if (practiceType === 'first') {
+                typeText = 'Stroop＋2-back，第一次施測（2-back 做 12 題練習）';
+            } else {
+                typeText = 'Stroop＋2-back，一般施測（2-back 做 6 題暖身）';
+            }
 
             const msg = "確定要開始測驗嗎？這將同步所有學生的畫面。\n\n"
                       + "施測類型：" + typeText + "\n"

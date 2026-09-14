@@ -1,18 +1,26 @@
-# 執行方式：在 stroop_project 資料夾下輸入 python app.py
-# 啟動後畫面會直接印出主控端與學生端的網址，不需要自己去查 IP。
+# 執行方式（在程式資料夾下）：
+#   python app.py               只有 Stroop（目前 REC 核准的版本，預設）
+#   python app.py --with-2back  Stroop + 2-back（REC 變更案核准後才能使用）
+# 啟動後畫面會直接印出主控端與學生端的網址，以及目前是哪一種版本。
 #
-# 一場施測的流程：
+# 只有 Stroop 的流程：
+#   主控端選「當日場次」→ 按開始
+#   → 學生做 Stroop（8 題練習 + 24 題正式）
+#   → 顯示個人成績與排名，測驗結束
+#
+# Stroop + 2-back 的流程：
 #   主控端選「施測類型」與「當日場次」→ 按開始
 #   → 學生做 Stroop（8 題練習 + 24 題正式）
 #   → 顯示個人成績與排名，倒數後自動進入 2-back 說明頁
 #   → 2-back（第一次施測 12 題練習／其後 6 題暖身，接 30 題正式）
 #   → 顯示「完成」，不顯示任何成績
 #
-# 資料落檔：開始測驗時即建立兩個 CSV，之後逐筆附加寫入，
+# 資料落檔：第一筆資料進來時才建立 CSV，之後逐筆附加寫入，
 #          手機斷線或伺服器重啟都不影響已寫入的資料。
 
 import os
 import csv
+import argparse
 import socket
 import warnings
 from datetime import datetime, timezone
@@ -34,8 +42,18 @@ with warnings.catch_warnings():
 
 OUTPUT_DIR = 'output'
 
+# 是否啟用 2-back 工作記憶測驗。
+# 同意書與目前核准的計畫書只包含 Stroop，REC 變更案通過之前一律不能施測 2-back，
+# 因此預設關閉，必須在啟動時明確加上 --with-2back 才會打開。
+# 刻意不做成主控端網頁上的選項：網頁選項容易在施測現場被誤點，
+# 啟動參數則要重開伺服器才能改變，也會清楚印在啟動訊息與主控端頁面上。
+TWOBACK_ENABLED = False
+
+TEST_SET_STROOP_ONLY = 'Stroop'
+TEST_SET_WITH_TWOBACK = 'Stroop+2-back'
+
 STROOP_HEADER = [
-    "Session_ID", "Session_Slot", "Practice_Type", "Student_ID", "Attempt",
+    "Session_ID", "Session_Slot", "Test_Set", "Practice_Type", "Student_ID", "Attempt",
     "Trial", "Condition", "Stimulus_Onset", "Reaction_Time_ms", "Is_Correct",
     "Page_Hidden",
 ]
@@ -115,6 +133,20 @@ def session_payload():
         'server_time_ms': server_time_ms(),
         'practice_type': session_info['practice_type'],
         'session_slot': session_info['session_slot'],
+        'twoback_enabled': TWOBACK_ENABLED,
+    }
+
+
+def session_info_payload():
+    """發給主控端的本場資訊。"""
+    return {
+        'session_id': session_info['session_id'],
+        'test_set': session_info['test_set'],
+        'twoback_enabled': TWOBACK_ENABLED,
+        'practice_type': session_info['practice_type'],
+        'session_slot': session_info['session_slot'],
+        'stroop_csv': session_info['stroop_csv'],
+        'twoback_csv': session_info['twoback_csv'],
     }
 
 
@@ -184,12 +216,12 @@ def append_csv(path, header, row):
 
 @app.route('/')
 def index():
-    return render_template('client.html')
+    return render_template('client.html', twoback_enabled=TWOBACK_ENABLED)
 
 
 @app.route('/admin')
 def admin():
-    return render_template('admin.html')
+    return render_template('admin.html', twoback_enabled=TWOBACK_ENABLED)
 
 
 @socketio.on('join')
@@ -241,9 +273,14 @@ def handle_start(data=None):
 
     data = as_dict(data)
 
-    practice_type = data.get('practice_type', 'regular')
-    if practice_type not in ('first', 'regular'):
-        practice_type = 'regular'
+    if TWOBACK_ENABLED:
+        practice_type = data.get('practice_type', 'regular')
+        if practice_type not in ('first', 'regular'):
+            practice_type = 'regular'
+    else:
+        # 只有 Stroop 時沒有練習／暖身之分，這一欄寫明「不適用」，
+        # 避免之後合併資料時被誤以為是 2-back 的一般施測。
+        practice_type = '不適用'
 
     try:
         session_slot = int(data.get('session_slot', 1))
@@ -263,10 +300,12 @@ def handle_start(data=None):
 
     session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     stroop_csv = os.path.join(OUTPUT_DIR, "stroop_%s.csv" % session_id)
-    twoback_csv = os.path.join(OUTPUT_DIR, "twoback_%s.csv" % session_id)
+    twoback_csv = (os.path.join(OUTPUT_DIR, "twoback_%s.csv" % session_id)
+                   if TWOBACK_ENABLED else None)
 
     session_info = {
         'session_id': session_id,
+        'test_set': TEST_SET_WITH_TWOBACK if TWOBACK_ENABLED else TEST_SET_STROOP_ONLY,
         'practice_type': practice_type,
         'session_slot': session_slot,
         'stroop_csv': stroop_csv,
@@ -277,13 +316,7 @@ def handle_start(data=None):
         connected_users[sid]['status'] = 'Stroop 測驗中'
     broadcast_users()
 
-    emit('session_info', {
-        'session_id': session_id,
-        'practice_type': practice_type,
-        'session_slot': session_slot,
-        'stroop_csv': stroop_csv,
-        'twoback_csv': twoback_csv,
-    }, broadcast=True)
+    emit('session_info', session_info_payload(), broadcast=True)
 
     emit('test_started', session_payload(), broadcast=True)
 
@@ -310,6 +343,7 @@ def handle_submit(data):
             append_csv(session_info['stroop_csv'], STROOP_HEADER, [
                 session_info['session_id'],
                 session_info['session_slot'],
+                session_info['test_set'],
                 session_info['practice_type'],
                 csv_safe(clean_student_id(r.get('student_id', student_id))),
                 attempt,
@@ -340,7 +374,8 @@ def handle_submit(data):
     }
 
     if request.sid in connected_users:
-        connected_users[request.sid]['status'] = 'Stroop 已完成'
+        # 只有 Stroop 時，交完 Stroop 就是整場結束
+        connected_users[request.sid]['status'] = 'Stroop 已完成' if TWOBACK_ENABLED else '已完成'
         broadcast_users()
 
     sorted_sids = sorted(completed_stats.keys(),
@@ -363,7 +398,8 @@ def handle_request_twoback():
 
     序列在伺服器端生成，每位學生各自獨立，避免鄰座互相對照。
     """
-    if not session_info:
+    # 未啟用 2-back 時伺服器一律拒絕，就算學生端被竄改也拿不到題目。
+    if not session_info or not TWOBACK_ENABLED:
         return
 
     student_id = connected_users.get(request.sid, {}).get('student_id', '未知')
@@ -394,7 +430,8 @@ def handle_request_twoback():
 @socketio.on('twoback_trial')
 def handle_twoback_trial(data):
     """2-back 每答完一題就回傳一筆，立刻落檔。"""
-    if not session_info:
+    # 未啟用 2-back 時不收任何 2-back 資料，也不會建立 2-back 的 CSV。
+    if not session_info or not TWOBACK_ENABLED:
         return
 
     data = as_dict(data)
@@ -421,6 +458,8 @@ def handle_twoback_trial(data):
 
 @socketio.on('twoback_done')
 def handle_twoback_done():
+    if not TWOBACK_ENABLED:
+        return
     if request.sid in connected_users:
         connected_users[request.sid]['status'] = '已完成'
         broadcast_users()
@@ -465,13 +504,7 @@ def handle_time_sync(data):
 def handle_request_status():
     """主控端重新整理後，取回目前場次狀態。"""
     if session_info:
-        emit('session_info', {
-            'session_id': session_info['session_id'],
-            'practice_type': session_info['practice_type'],
-            'session_slot': session_info['session_slot'],
-            'stroop_csv': session_info['stroop_csv'],
-            'twoback_csv': session_info['twoback_csv'],
-        }, to=request.sid)
+        emit('session_info', session_info_payload(), to=request.sid)
     broadcast_users()
 
 
@@ -531,6 +564,11 @@ def print_startup_banner(port):
     print()
     print(line)
     print('  認知測驗伺服器已啟動')
+    if TWOBACK_ENABLED:
+        print('  測驗版本：Stroop + 2-back 工作記憶測驗')
+        print('  ※ 僅限 REC 變更案核准後使用')
+    else:
+        print('  測驗版本：只有 Stroop（目前核准的版本）')
     print(line)
 
     if ip:
@@ -558,6 +596,13 @@ def print_startup_banner(port):
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='認知測驗伺服器')
+    parser.add_argument(
+        '--with-2back', action='store_true',
+        help='加入 2-back 工作記憶測驗（僅限 REC 變更案核准後使用）')
+    args = parser.parse_args()
+    TWOBACK_ENABLED = args.with_2back
+
     PORT = 5000
 
     if port_in_use(PORT):

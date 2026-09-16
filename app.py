@@ -21,6 +21,7 @@
 import os
 import csv
 import argparse
+import re
 import socket
 import uuid
 import warnings
@@ -57,13 +58,13 @@ TEST_SET_WITH_TWOBACK = 'Stroop+2-back'
 STROOP_HEADER = [
     "Session_ID", "Session_Slot", "Test_Set", "Practice_Type", "Student_ID", "Attempt",
     "Trial", "Condition", "Stimulus_Onset", "Reaction_Time_ms", "Is_Correct",
-    "Page_Hidden",
+    "Page_Hidden", "Entry_Method",
 ]
 
 TWOBACK_HEADER = [
     "Session_ID", "Session_Slot", "Practice_Type", "Student_ID", "Attempt",
     "Phase", "Trial", "Letter", "Is_Target", "Responded", "Response_Type",
-    "Is_Correct", "Reaction_Time_ms", "Stimulus_Onset", "Page_Hidden",
+    "Is_Correct", "Reaction_Time_ms", "Stimulus_Onset", "Page_Hidden", "Entry_Method",
 ]
 
 connected_users = {}
@@ -99,6 +100,32 @@ SERVER_BOOT_ID = uuid.uuid4().hex
 # 退回的訊息會送不到；等它重新連上時，伺服器認出這個識別碼就再退回一次。
 kicked_tokens = set()
 
+# 研究代碼名單：只有名單上的代碼可以進入測驗。
+# 名單放在 participants.txt（一行一個代碼），這個檔案已列入 .gitignore，
+# 不會被推上公開的 GitHub；程式啟動時讀入，學生端頁面看不到名單內容。
+PARTICIPANTS_FILE = 'participants.txt'
+allowed_ids = set()
+
+# 本場已經做完測驗的代碼。同一場裡不能再用同一個代碼進入第二次，
+# 避免打錯代碼的人剛好打成已經做完的同學的代碼。每場開始與結束時清空。
+completed_ids = set()
+
+# 被擋下、等待研究人員決定的進入嘗試（key 為那支手機的連線編號）。
+# 學生若確定沒有輸入錯誤，研究人員當面確認身分後，可以在主控端直接放行。
+pending_rejections = {}
+
+# 研究人員放行過的頁面識別碼 → 被擋下的原因。
+# 手機斷線重連後會拿到新的連線編號，靠這個保留「這支手機是被放行的」紀錄。
+admitted_tokens = {}
+
+# 寫進 CSV 的 Entry_Method 欄：分析時看得出哪些資料是名單以外或重複進入的例外
+ENTRY_BY_LIST = '名單'
+ENTRY_ADMITTED = {
+    'not_allowed': '研究人員放行（不在名單）',
+    'in_use': '研究人員放行（使用中）',
+    'completed': '研究人員放行（本場已完成）',
+}
+
 
 def broadcast_users():
     """把連線名單推給主控端，並標出重複的座號。
@@ -121,9 +148,13 @@ def broadcast_users():
         user_list.append(item)
 
     # 只發給主控端
+    rejections = [{'sid': s, 'student_id': r['student_id'], 'reason': r['reason']}
+                  for s, r in pending_rejections.items()]
+
     emit('update_users', {
         'users': user_list,
         'duplicate_ids': sorted(s for s, n in counts.items() if n > 1),
+        'rejections': rejections,
     }, to=ADMIN_ROOM)
 
 
@@ -214,6 +245,40 @@ def clean_token(value):
     return value[:64]
 
 
+def load_participants(path):
+    """讀入研究代碼名單，回傳 (代碼集合, 格式錯誤的行)。
+
+    一行一個 6 碼數字；空行與 # 開頭的註解行會略過。
+    """
+    ids, bad = set(), []
+    with open(path, encoding='utf-8-sig') as f:
+        for lineno, line in enumerate(f, 1):
+            text = line.strip()
+            if not text or text.startswith('#'):
+                continue
+            if re.fullmatch(r'[0-9]{6}', text):
+                ids.add(text)
+            else:
+                bad.append((lineno, text))
+    return ids, bad
+
+
+def join_rejection(student_id, token):
+    """判斷這個代碼能不能進入測驗：可以就回傳 None，不行就回傳原因代號。
+
+    同一個頁面（識別碼相同）的重複送出不算「被別人使用」，
+    這樣手機斷線重連、或學生不小心連按兩下都不會被擋。
+    """
+    if student_id not in allowed_ids:
+        return 'not_allowed'
+    for user in connected_users.values():
+        if user.get('student_id') == student_id and not (token and user.get('token') == token):
+            return 'in_use'
+    if student_id in completed_ids:
+        return 'completed'
+    return None
+
+
 def yes_no(value):
     """把前端送來的旗標統一成「是／否」。"""
     if value is True or value in ('是', 'true', True):
@@ -257,17 +322,31 @@ def admin():
     student_url = 'http://%s:%d' % (ip, PORT) if ip else ''
     other_urls = ['http://%s:%d' % (x, PORT) for x in all_lan_ips() if x != ip]
     return render_template('admin.html', twoback_enabled=TWOBACK_ENABLED,
-                           student_url=student_url, other_urls=other_urls)
+                           student_url=student_url, other_urls=other_urls,
+                           participants_count=len(allowed_ids))
 
 
 @socketio.on('join')
 def handle_join(data):
     data = as_dict(data)
     student_id = clean_student_id(data.get('student_id'))
+    token = clean_token(data.get('token'))
 
+    # 名單以外的代碼、正被別人使用中的代碼、本場已做完的代碼，一律不能進入
+    reason = join_rejection(student_id, token)
+    if reason:
+        # 記下這次被擋下的嘗試，讓研究人員當面確認後可以在主控端直接放行
+        pending_rejections[request.sid] = {'student_id': student_id, 'reason': reason,
+                                           'token': token}
+        emit('join_result', {'ok': False, 'reason': reason}, to=request.sid)
+        broadcast_users()
+        return
+
+    pending_rejections.pop(request.sid, None)
     status = 'Stroop 測驗中' if session_info else '等待中'
     connected_users[request.sid] = {'student_id': student_id, 'status': status,
-                                    'token': clean_token(data.get('token'))}
+                                    'token': token, 'entry': ENTRY_BY_LIST}
+    emit('join_result', {'ok': True, 'student_id': student_id}, to=request.sid)
     broadcast_users()
 
     # 中途加入或手機重新整理時，直接讓他接上進行中的場次
@@ -305,13 +384,17 @@ def handle_rejoin(data):
         status = 'Stroop 測驗中' if session_info else '等待中'
 
     connected_users[request.sid] = {'student_id': student_id, 'status': status,
-                                    'token': token}
+                                    'token': token,
+                                    'entry': ENTRY_ADMITTED.get(admitted_tokens.get(token),
+                                                                ENTRY_BY_LIST)}
     broadcast_users()
 
 
 @socketio.on('disconnect')
 def handle_disconnect():
     admin_sids.discard(request.sid)
+    if pending_rejections.pop(request.sid, None):
+        broadcast_users()
     if request.sid in connected_users:
         del connected_users[request.sid]
         broadcast_users()
@@ -346,6 +429,37 @@ def handle_kick_user(data):
     broadcast_users()
 
 
+@socketio.on('admit_user')
+def handle_admit_user(data):
+    """研究人員當面確認後，放行一次被擋下的進入嘗試。
+
+    只接受主控端連線送來的請求。放行原因會寫進 CSV 的 Entry_Method 欄，
+    分析時看得出哪些資料屬於名單以外、或重複進入的例外情況。
+    """
+    if request.sid not in admin_sids:
+        return
+    target = as_dict(data).get('sid')
+    pending = pending_rejections.pop(target, None)
+    if not pending or not re.fullmatch(r'[0-9]{6}', pending['student_id']):
+        broadcast_users()
+        return
+
+    if pending['token']:
+        admitted_tokens[pending['token']] = pending['reason']
+
+    status = 'Stroop 測驗中' if session_info else '等待中'
+    connected_users[target] = {
+        'student_id': pending['student_id'], 'status': status, 'token': pending['token'],
+        'entry': ENTRY_ADMITTED.get(pending['reason'], ENTRY_BY_LIST),
+    }
+    emit('admitted', {'student_id': pending['student_id']}, to=target)
+    broadcast_users()
+
+    # 場次已經開始的話，讓他直接接上
+    if session_info:
+        emit('test_started', session_payload(), to=target)
+
+
 @socketio.on('start_test')
 def handle_start(data=None):
     global test_results, completed_stats, session_info, twoback_sequences
@@ -376,6 +490,7 @@ def handle_start(data=None):
     twoback_sequences = {}
     stroop_attempts.clear()
     twoback_attempts.clear()
+    completed_ids.clear()
 
     if not os.path.exists(OUTPUT_DIR):
         os.makedirs(OUTPUT_DIR)
@@ -435,6 +550,7 @@ def handle_submit(data):
                 r.get('rt'),
                 r.get('correct'),
                 yes_no(r.get('page_hidden')),
+                connected_users.get(request.sid, {}).get('entry', ENTRY_BY_LIST),
             ])
 
     total_trials = len(results)
@@ -454,6 +570,9 @@ def handle_submit(data):
         'accuracy': accuracy,
         'avg_rt': avg_rt
     }
+
+    if not TWOBACK_ENABLED and session_info and student_id != '未知':
+        completed_ids.add(student_id)
 
     if request.sid in connected_users:
         # 只有 Stroop 時，交完 Stroop 就是整場結束
@@ -535,6 +654,7 @@ def handle_twoback_trial(data):
         data.get('rt'),
         iso_from_ms(data.get('onset_ms')),
         yes_no(data.get('page_hidden')),
+        connected_users.get(request.sid, {}).get('entry', ENTRY_BY_LIST),
     ])
 
 
@@ -542,6 +662,9 @@ def handle_twoback_trial(data):
 def handle_twoback_done():
     if not TWOBACK_ENABLED:
         return
+    student_id = connected_users.get(request.sid, {}).get('student_id')
+    if session_info and student_id:
+        completed_ids.add(student_id)
     if request.sid in connected_users:
         connected_users[request.sid]['status'] = '已完成'
         broadcast_users()
@@ -557,6 +680,7 @@ def handle_end_session():
 
     finished = session_info
     session_info = None
+    completed_ids.clear()
 
     for sid in connected_users:
         connected_users[sid]['status'] = '等待中'
@@ -656,6 +780,7 @@ def print_startup_banner(port):
         print('  ※ 僅限 REC 變更案核准後使用')
     else:
         print('  測驗版本：只有 Stroop（目前核准的版本）')
+    print('  研究代碼名單：%d 位（%s）' % (len(allowed_ids), PARTICIPANTS_FILE))
     print(line)
 
     if ip:
@@ -689,6 +814,33 @@ if __name__ == '__main__':
         help='加入 2-back 工作記憶測驗（僅限 REC 變更案核准後使用）')
     args = parser.parse_args()
     TWOBACK_ENABLED = args.with_2back
+
+    # 讀入研究代碼名單；找不到或是空的就不啟動，
+    # 避免在沒有名單保護的情況下正式施測。
+    if not os.path.exists(PARTICIPANTS_FILE):
+        print()
+        print('=' * 56)
+        print('  啟動失敗：找不到研究代碼名單 %s' % PARTICIPANTS_FILE)
+        print('=' * 56)
+        print()
+        print('  請在程式資料夾建立 %s，一行寫一個 6 碼研究代碼。' % PARTICIPANTS_FILE)
+        print('  格式可參考 participants.example.txt。')
+        print()
+        raise SystemExit(1)
+
+    allowed_ids, bad_lines = load_participants(PARTICIPANTS_FILE)
+
+    if bad_lines:
+        print()
+        print('  注意：研究代碼名單中有 %d 行格式不正確，已略過：' % len(bad_lines))
+        for lineno, text in bad_lines:
+            print('    第 %d 行：%s' % (lineno, text))
+
+    if not allowed_ids:
+        print()
+        print('  啟動失敗：研究代碼名單 %s 裡沒有任何有效的 6 碼代碼。' % PARTICIPANTS_FILE)
+        print()
+        raise SystemExit(1)
 
     if port_in_use(PORT):
         print()

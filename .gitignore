@@ -12,3 +12,7 @@ __pycache__/
 .claude/
 .vscode/
 .idea/
+
+# 研究代碼名單：可對應到研究對象，絕對不可以推送到公開的 GitHub。
+# 格式請參考 participants.example.txt。
+participants.txt

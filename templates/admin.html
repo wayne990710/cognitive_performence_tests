@@ -40,6 +40,14 @@
         }
         tr.dup-row td { background-color: #fdecea; }
 
+        #rejection-box {
+            display: none;
+            background-color: #fef5e7; border: 2px solid #e67e22; border-radius: 10px;
+            padding: 4px 16px 16px 16px; margin-bottom: 20px;
+        }
+        #rejection-box h3 { color: #a04000; }
+        .btn-admit { background-color: #27ae60; color: white; font-size: 14px; padding: 6px 12px; margin: 0; }
+
         .btn-kick { background-color: #e74c3c; color: white; font-size: 14px; padding: 6px 12px; margin: 0; }
 
         .qr-panel { display: flex; gap: 20px; align-items: center; background-color: #ffffff; border: 1px solid #dcdde1; border-radius: 10px; padding: 16px 20px; margin-bottom: 18px; }
@@ -114,7 +122,8 @@
             <p class="hint">由主控端統一寫入所有人的資料，學生端不需要選。</p>
         </fieldset>
 
-        <p style="font-size: 20px; font-weight: bold;">目前已連線學生人數：<span id="user-count">0</span> 人</p>
+        <p style="font-size: 20px; font-weight: bold;">目前已連線學生人數：<span id="user-count">0</span> 人
+            <span style="font-size: 15px; font-weight: normal; color: #7f8c8d;">（研究代碼名單共 {{ participants_count }} 位）</span></p>
 
         <div id="dup-warning">
             <b>注意：有重複的班級座號</b><span id="dup-list"></span><br>
@@ -130,6 +139,21 @@
             <div id="s-twoback-row"><b>2-back 資料：</b><code id="s-twoback"></code></div>
             <div class="hint">資料每答完一題就即時寫入上述檔案，不需要按匯出；手機斷線或伺服器重開都不會影響已寫入的部分。</div>
         </div>
+    </div>
+
+    <div id="rejection-box">
+        <h3>被擋下的進入嘗試</h3>
+        <p class="hint">學生若確定沒有輸入錯誤，請當面確認身分後再按「允許進入」。放行紀錄會寫進資料檔的 Entry_Method 欄。</p>
+        <table>
+            <thead>
+                <tr>
+                    <th>輸入的座號</th>
+                    <th>被擋下的原因</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody id="rejection-list"></tbody>
+        </table>
     </div>
 
     <h3>學生測驗進度監控：</h3>
@@ -212,7 +236,8 @@
                 if (user.duplicate) tr.className = 'dup-row';
 
                 const tdId = document.createElement('td');
-                tdId.innerText = user.student_id + (user.duplicate ? '（重複）' : '');
+                tdId.innerText = user.student_id + (user.duplicate ? '（重複）' : '')
+                    + (user.entry && user.entry !== '名單' ? '（研究人員放行）' : '');
 
                 const tdStatus = document.createElement('td');
                 tdStatus.innerText = user.status;
@@ -247,6 +272,8 @@
             const dups = data.duplicate_ids || [];
             document.getElementById('dup-warning').style.display = dups.length ? 'block' : 'none';
             document.getElementById('dup-list').innerText = dups.length ? '：' + dups.join('、') : '';
+
+            renderRejections(data.rejections || []);
         });
 
         const SESSION_BOX_HTML = document.getElementById('session-box').innerHTML;
@@ -327,6 +354,62 @@
                     practice_type: practiceType,
                     session_slot: sessionSlot
                 });
+            }
+        }
+
+        const REJECTION_TEXT = {
+            not_allowed: '不在研究代碼名單中',
+            in_use: '另一支手機正在使用這個座號',
+            completed: '這個座號本場已經做完'
+        };
+
+        function renderRejections(list) {
+            const box = document.getElementById('rejection-box');
+            const tbody = document.getElementById('rejection-list');
+            tbody.innerHTML = "";
+            box.style.display = list.length ? 'block' : 'none';
+
+            list.forEach(r => {
+                const tr = document.createElement('tr');
+
+                const tdId = document.createElement('td');
+                tdId.innerText = r.student_id;
+
+                const tdReason = document.createElement('td');
+                tdReason.innerText = REJECTION_TEXT[r.reason] || r.reason;
+
+                const tdAction = document.createElement('td');
+                const btnAdmit = document.createElement('button');
+                btnAdmit.className = 'btn-admit';
+                btnAdmit.innerText = '允許進入';
+                btnAdmit.onclick = () => admitUser(r.sid, r.student_id, r.reason);
+                tdAction.appendChild(btnAdmit);
+
+                tr.appendChild(tdId);
+                tr.appendChild(tdReason);
+                tr.appendChild(tdAction);
+                tbody.appendChild(tr);
+            });
+        }
+
+        function admitUser(sid, studentId, reason) {
+            let msg;
+            if (reason === 'not_allowed') {
+                msg = "⚠ 座號 " + studentId + " 不在研究代碼名單中。\n\n"
+                    + "請先確認這位學生已簽署知情同意書，並確認座號沒有打錯，再允許進入。\n\n"
+                    + "允許進入後，他的資料會標記為「研究人員放行（不在名單）」。確定要允許進入嗎？";
+            } else if (reason === 'in_use') {
+                msg = "座號 " + studentId + " 目前已有另一支手機在使用。\n\n"
+                    + "允許進入後，名單上會出現兩筆相同座號，兩邊的資料可能混在一起。"
+                    + "請先確認另一支手機是不是舊連線或別人打錯，必要時先把那一筆「退回重新輸入」。\n\n"
+                    + "確定要允許進入嗎？";
+            } else {
+                msg = "座號 " + studentId + " 本場已經做完測驗。\n\n"
+                    + "允許進入後他會再做一次，兩次的資料都會保留（Attempt 欄會標示第幾次）。\n\n"
+                    + "確定要允許進入嗎？";
+            }
+            if (confirm(msg)) {
+                socket.emit('admit_user', { sid: sid });
             }
         }
 

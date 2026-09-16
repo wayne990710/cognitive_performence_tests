@@ -108,6 +108,13 @@
         #my-id { font-size: 34px; letter-spacing: 4px; font-family: Consolas, monospace; }
         .id-hint { font-size: 17px; color: #c0392b; font-weight: bold; margin-top: 8px; }
 
+        #join-error {
+            display: none;
+            max-width: 420px; margin: 0 auto 16px auto; padding: 10px 14px;
+            background-color: #fdecea; border-radius: 8px;
+            color: #922b21; font-size: 17px; font-weight: bold; line-height: 1.5;
+        }
+
         #kicked-msg {
             display: none;
             max-width: 420px; margin: 0 auto 20px auto; padding: 12px 16px;
@@ -127,7 +134,8 @@
         <h2>請輸入 6 碼班級座號</h2>
         <input type="text" id="student_id" maxlength="6" pattern="\d{6}" placeholder="例如: 114515">
         <br>
-        <button onclick="joinTest()">進入等待室</button>
+        <p id="join-error"></p>
+        <button id="btn-join" onclick="joinTest()">進入等待室</button>
     </div>
 
     <div id="waiting-screen">
@@ -395,14 +403,84 @@
                 return;
             }
 
+            // 由伺服器確認代碼是否在名單上、是否已被使用，確認通過才進入等待室。
+            // 名單只放在伺服器，不寫進頁面，學生看原始碼也看不到其他人的代碼。
+            hideJoinError();
+            document.getElementById('kicked-msg').style.display = 'none';
+            const btn = document.getElementById('btn-join');
+            btn.disabled = true;
+            btn.innerText = '確認中…';
+            pendingJoinId = idInput;
+            socket.emit('join', { student_id: idInput, token: CLIENT_TOKEN });
+
+            // 伺服器沒有回應（例如手機沒連上 Wi-Fi）時不要一直卡住
+            clearTimeout(joinTimeoutTimer);
+            joinTimeoutTimer = setTimeout(() => {
+                if (pendingJoinId === null) return;
+                pendingJoinId = null;
+                resetJoinButton();
+                showJoinError('連不上測驗程式，請確認手機已連上教室的 Wi-Fi，再試一次。');
+            }, 6000);
+        }
+
+        let pendingJoinId = null;
+        let joinTimeoutTimer = null;
+
+        const JOIN_ERROR_TEXT = {
+            not_allowed: '這個座號不在本研究的名單中，請確認是否輸入錯誤；若確定沒有錯，請告訴研究人員。',
+            in_use: '這個座號目前已經有人使用中，請確認是否輸入錯誤；若確定沒有錯，請告訴研究人員。',
+            completed: '這個座號本場測驗已經完成；若有疑問，請告訴研究人員。'
+        };
+
+        function showJoinError(text) {
+            const el = document.getElementById('join-error');
+            el.innerText = text;
+            el.style.display = 'block';
+        }
+
+        function hideJoinError() {
+            document.getElementById('join-error').style.display = 'none';
+        }
+
+        function resetJoinButton() {
+            const btn = document.getElementById('btn-join');
+            btn.disabled = false;
+            btn.innerText = '進入等待室';
+        }
+
+        socket.on('join_result', (data) => {
+            if (pendingJoinId === null) return;
+            clearTimeout(joinTimeoutTimer);
+            const idInput = pendingJoinId;
+            pendingJoinId = null;
+            resetJoinButton();
+
+            if (!data || !data.ok) {
+                showJoinError((JOIN_ERROR_TEXT[data && data.reason] || '無法進入測驗，請告訴研究人員。')
+                    + '\n研究人員確認後可以直接讓你進入，請不要關閉這個畫面。');
+                return;
+            }
+
             studentId = idInput;
             hasJoined = true;
             document.getElementById('my-id').innerText = studentId;
-
-            socket.emit('join', { student_id: studentId, token: CLIENT_TOKEN });
             showScreen('waiting-screen');
             syncClock(5);
-        }
+        });
+
+        // 研究人員在主控端按了「允許進入」：不用重新輸入，直接進入等待室
+        socket.on('admitted', (data) => {
+            if (hasJoined || !data || !data.student_id) return;
+            clearTimeout(joinTimeoutTimer);
+            pendingJoinId = null;
+            resetJoinButton();
+            hideJoinError();
+            studentId = data.student_id;
+            hasJoined = true;
+            document.getElementById('my-id').innerText = studentId;
+            showScreen('waiting-screen');
+            syncClock(5);
+        });
 
         // 主控端按「退回重新輸入」：直接重新整理頁面回到輸入座號的畫面。
         // 用重新整理而不是切換畫面，是因為測驗中還有很多排好的計時器，
